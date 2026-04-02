@@ -112,7 +112,7 @@ impl CliApp {
 
     pub fn run_repl(&mut self) -> io::Result<()> {
         let editor = LineEditor::new("› ");
-        println!("Rusty Claude CLI interactive mode");
+        println!("Tongji Code CLI interactive mode");
         println!("Type /help for commands. Shift+Enter or Ctrl+J inserts a newline.");
 
         while let Some(input) = editor.read_line()? {

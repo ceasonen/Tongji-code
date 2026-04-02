@@ -1083,22 +1083,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "rusty-claude-cli"
-version = "0.1.0"
-dependencies = [
- "api",
- "commands",
- "compat-harness",
- "crossterm",
- "pulldown-cmark",
- "runtime",
- "serde_json",
- "syntect",
- "tokio",
- "tools",
-]
-
-[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1425,6 +1409,22 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tongji-code-cli"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "commands",
+ "compat-harness",
+ "crossterm",
+ "pulldown-cmark",
+ "runtime",
+ "serde_json",
+ "syntect",
+ "tokio",
+ "tools",
 ]
 
 [[package]]

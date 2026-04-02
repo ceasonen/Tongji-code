@@ -4,9 +4,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(
-    name = "rusty-claude-cli",
+    name = "tongji-code-cli",
     version,
-    about = "Rust Claude CLI prototype"
+    about = "Tongji Code CLI prototype"
 )]
 pub struct Cli {
     #[arg(long, default_value = "claude-3-7-sonnet")]
@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn parses_requested_flags() {
         let cli = Cli::parse_from([
-            "rusty-claude-cli",
+            "tongji-code-cli",
             "--model",
             "claude-3-5-haiku",
             "--permission-mode",
@@ -93,10 +93,10 @@ mod tests {
 
     #[test]
     fn parses_login_and_logout_commands() {
-        let login = Cli::parse_from(["rusty-claude-cli", "login"]);
+        let login = Cli::parse_from(["tongji-code-cli", "login"]);
         assert_eq!(login.command, Some(Command::Login));
 
-        let logout = Cli::parse_from(["rusty-claude-cli", "logout"]);
+        let logout = Cli::parse_from(["tongji-code-cli", "logout"]);
         assert_eq!(logout.command, Some(Command::Logout));
     }
 }

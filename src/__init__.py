@@ -1,4 +1,4 @@
-"""Python porting workspace for the Claude Code rewrite effort."""
+"""Tongji Code Python mirror workspace for the clean-room harness rewrite."""
 
 from .commands import PORTED_COMMANDS, build_command_backlog
 from .parity_audit import ParityAuditResult, run_parity_audit

@@ -65,11 +65,15 @@ fn resolve_upstream_repo_root(primary_repo_root: &Path) -> PathBuf {
 fn upstream_repo_candidates(primary_repo_root: &Path) -> Vec<PathBuf> {
     let mut candidates = vec![primary_repo_root.to_path_buf()];
 
+    if let Some(explicit) = std::env::var_os("TONGJI_CODE_UPSTREAM") {
+        candidates.push(PathBuf::from(explicit));
+    }
     if let Some(explicit) = std::env::var_os("CLAUDE_CODE_UPSTREAM") {
         candidates.push(PathBuf::from(explicit));
     }
 
     for ancestor in primary_repo_root.ancestors().take(4) {
+        candidates.push(ancestor.join("tongji-code"));
         candidates.push(ancestor.join("claude-code"));
         candidates.push(ancestor.join("clawd-code"));
     }

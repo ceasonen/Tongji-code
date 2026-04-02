@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
+use crate::json::JsonValue;
 
 #[derive(Debug)]
 pub enum PromptBuildError {
@@ -197,15 +198,22 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
 
     let mut files = Vec::new();
     for dir in directories {
-        for candidate in [
-            dir.join("CLAUDE.md"),
-            dir.join("CLAUDE.local.md"),
-            dir.join(".claude").join("CLAUDE.md"),
-        ] {
+        for candidate in instruction_candidates(&dir) {
             push_context_file(&mut files, candidate)?;
         }
     }
     Ok(dedupe_instruction_files(files))
+}
+
+fn instruction_candidates(dir: &Path) -> [PathBuf; 6] {
+    [
+        dir.join("TONGJI.md"),
+        dir.join("TONGJI.local.md"),
+        dir.join(".tongji").join("TONGJI.md"),
+        dir.join("CLAUDE.md"),
+        dir.join("CLAUDE.local.md"),
+        dir.join(".claude").join("CLAUDE.md"),
+    ]
 }
 
 fn push_context_file(files: &mut Vec<ContextFile>, path: PathBuf) -> std::io::Result<()> {
@@ -246,7 +254,7 @@ fn render_project_context(project_context: &ProjectContext) -> String {
     ];
     if !project_context.instruction_files.is_empty() {
         bullets.push(format!(
-            "Claude instruction files discovered: {}.",
+            "Tongji Code instruction files discovered: {}.",
             project_context.instruction_files.len()
         ));
     }
@@ -260,7 +268,7 @@ fn render_project_context(project_context: &ProjectContext) -> String {
 }
 
 fn render_instruction_files(files: &[ContextFile]) -> String {
-    let mut sections = vec!["# Claude instructions".to_string()];
+    let mut sections = vec!["# Tongji Code instructions".to_string()];
     let mut remaining_chars = MAX_TOTAL_INSTRUCTION_CHARS;
     for file in files {
         if remaining_chars == 0 {
@@ -380,7 +388,7 @@ fn render_config_section(config: &RuntimeConfig) -> String {
     let mut lines = vec!["# Runtime config".to_string()];
     if config.loaded_entries().is_empty() {
         lines.extend(prepend_bullets(vec![
-            "No Claude Code settings files loaded.".to_string(),
+            "No Tongji Code or Claude-compatible settings files loaded.".to_string(),
         ]));
         return lines.join("\n");
     }
@@ -393,8 +401,67 @@ fn render_config_section(config: &RuntimeConfig) -> String {
             .collect(),
     ));
     lines.push(String::new());
-    lines.push(config.as_json().render());
+    lines.push(redact_config_json(&config.as_json()).render());
     lines.join("\n")
+}
+
+fn redact_config_json(value: &JsonValue) -> JsonValue {
+    redact_json_value(value, None)
+}
+
+fn redact_json_value(value: &JsonValue, key_hint: Option<&str>) -> JsonValue {
+    if key_hint.is_some_and(is_sensitive_config_key) {
+        return JsonValue::String("[REDACTED]".to_string());
+    }
+
+    match value {
+        JsonValue::Null => JsonValue::Null,
+        JsonValue::Bool(flag) => JsonValue::Bool(*flag),
+        JsonValue::Number(number) => JsonValue::Number(*number),
+        JsonValue::String(text) => JsonValue::String(text.clone()),
+        JsonValue::Array(values) => JsonValue::Array(
+            values
+                .iter()
+                .map(|entry| redact_json_value(entry, key_hint))
+                .collect(),
+        ),
+        JsonValue::Object(entries) => JsonValue::Object(
+            entries
+                .iter()
+                .map(|(key, entry)| (key.clone(), redact_json_value(entry, Some(key))))
+                .collect(),
+        ),
+    }
+}
+
+fn is_sensitive_config_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    matches!(
+        normalized.as_str(),
+        "apikey"
+            | "xapikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "authtoken"
+            | "bearertoken"
+            | "clientsecret"
+            | "privatekey"
+            | "secret"
+            | "password"
+            | "passwd"
+            | "cookie"
+            | "authorization"
+    ) || normalized.ends_with("apikey")
+        || normalized.ends_with("token") && !normalized.ends_with("url")
+        || normalized.ends_with("secret") && !normalized.ends_with("url")
+        || normalized.contains("password")
+        || normalized.contains("cookie")
+        || normalized.contains("authorization")
 }
 
 fn get_simple_intro_section(has_output_style: bool) -> String {
@@ -452,8 +519,9 @@ fn get_actions_section() -> String {
 mod tests {
     use super::{
         collapse_blank_lines, display_context_path, normalize_instruction_content,
-        render_instruction_content, render_instruction_files, truncate_instruction_content,
-        ContextFile, ProjectContext, SystemPromptBuilder, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+        render_config_section, render_instruction_content, render_instruction_files,
+        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
+        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
     use std::fs;
@@ -469,17 +537,17 @@ mod tests {
     }
 
     #[test]
-    fn discovers_instruction_files_from_ancestor_chain() {
+    fn discovers_tongji_instruction_files_from_ancestor_chain() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
-        fs::create_dir_all(nested.join(".claude")).expect("nested claude dir");
-        fs::write(root.join("CLAUDE.md"), "root instructions").expect("write root instructions");
-        fs::write(root.join("CLAUDE.local.md"), "local instructions")
+        fs::create_dir_all(nested.join(".tongji")).expect("nested tongji dir");
+        fs::write(root.join("TONGJI.md"), "root instructions").expect("write root instructions");
+        fs::write(root.join("TONGJI.local.md"), "local instructions")
             .expect("write local instructions");
         fs::create_dir_all(root.join("apps")).expect("apps dir");
-        fs::write(root.join("apps").join("CLAUDE.md"), "apps instructions")
+        fs::write(root.join("apps").join("TONGJI.md"), "apps instructions")
             .expect("write apps instructions");
-        fs::write(nested.join(".claude").join("CLAUDE.md"), "nested rules")
+        fs::write(nested.join(".tongji").join("TONGJI.md"), "nested rules")
             .expect("write nested rules");
 
         let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
@@ -506,8 +574,8 @@ mod tests {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
         fs::create_dir_all(&nested).expect("nested dir");
-        fs::write(root.join("CLAUDE.md"), "same rules\n\n").expect("write root");
-        fs::write(nested.join("CLAUDE.md"), "same rules\n").expect("write nested");
+        fs::write(root.join("TONGJI.md"), "same rules\n\n").expect("write root");
+        fs::write(nested.join("TONGJI.md"), "same rules\n").expect("write nested");
 
         let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
         assert_eq!(context.instruction_files.len(), 1);
@@ -515,6 +583,19 @@ mod tests {
             normalize_instruction_content(&context.instruction_files[0].content),
             "same rules"
         );
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn still_supports_legacy_claude_instruction_files() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(root.join("CLAUDE.md"), "legacy rules").expect("write legacy instructions");
+
+        let context = ProjectContext::discover(&root, "2026-03-31").expect("context should load");
+        assert_eq!(context.instruction_files.len(), 1);
+        assert_eq!(context.instruction_files[0].content, "legacy rules");
+
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 
@@ -535,8 +616,8 @@ mod tests {
     #[test]
     fn displays_context_paths_compactly() {
         assert_eq!(
-            display_context_path(Path::new("/tmp/project/.claude/CLAUDE.md")),
-            "CLAUDE.md"
+            display_context_path(Path::new("/tmp/project/.tongji/TONGJI.md")),
+            "TONGJI.md"
         );
     }
 
@@ -549,7 +630,7 @@ mod tests {
             .current_dir(&root)
             .status()
             .expect("git init should run");
-        fs::write(root.join("CLAUDE.md"), "rules").expect("write instructions");
+        fs::write(root.join("TONGJI.md"), "rules").expect("write instructions");
         fs::write(root.join("tracked.txt"), "hello").expect("write tracked file");
 
         let context =
@@ -557,19 +638,19 @@ mod tests {
 
         let status = context.git_status.expect("git status should be present");
         assert!(status.contains("## No commits yet on") || status.contains("## "));
-        assert!(status.contains("?? CLAUDE.md"));
+        assert!(status.contains("?? TONGJI.md"));
         assert!(status.contains("?? tracked.txt"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 
     #[test]
-    fn load_system_prompt_reads_claude_files_and_config() {
+    fn load_system_prompt_reads_tongji_files_and_config() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claude")).expect("claude dir");
-        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write instructions");
+        fs::create_dir_all(root.join(".tongji")).expect("tongji dir");
+        fs::write(root.join("TONGJI.md"), "Project rules").expect("write instructions");
         fs::write(
-            root.join(".claude").join("settings.json"),
+            root.join(".tongji").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
@@ -591,12 +672,52 @@ mod tests {
     }
 
     #[test]
-    fn renders_claude_code_style_sections_with_project_context() {
+    fn config_section_redacts_secret_values() {
         let root = temp_dir();
-        fs::create_dir_all(root.join(".claude")).expect("claude dir");
-        fs::write(root.join("CLAUDE.md"), "Project rules").expect("write CLAUDE.md");
+        fs::create_dir_all(root.join(".tongji")).expect("tongji dir");
         fs::write(
-            root.join(".claude").join("settings.json"),
+            root.join(".tongji").join("settings.json"),
+            r#"{
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "super-secret-token",
+                    "OPENAI_API_KEY": "openai-secret",
+                    "PUBLIC_FLAG": "enabled"
+                },
+                "auth": {
+                    "oauthProviders": {
+                        "anthropic": {
+                            "clientId": "client-id",
+                            "authorizeUrl": "https://console.example.test/oauth/authorize",
+                            "tokenUrl": "https://console.example.test/oauth/token"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("write settings");
+
+        let config = ConfigLoader::new(&root, root.join("missing-home"))
+            .load()
+            .expect("config should load");
+        let rendered = render_config_section(&config);
+
+        assert!(rendered.contains("\"ANTHROPIC_AUTH_TOKEN\":\"[REDACTED]\""));
+        assert!(rendered.contains("\"OPENAI_API_KEY\":\"[REDACTED]\""));
+        assert!(rendered.contains("\"PUBLIC_FLAG\":\"enabled\""));
+        assert!(rendered.contains("\"tokenUrl\":\"https://console.example.test/oauth/token\""));
+        assert!(!rendered.contains("super-secret-token"));
+        assert!(!rendered.contains("openai-secret"));
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn renders_tongji_code_style_sections_with_project_context() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".tongji")).expect("tongji dir");
+        fs::write(root.join("TONGJI.md"), "Project rules").expect("write TONGJI.md");
+        fs::write(
+            root.join(".tongji").join("settings.json"),
             r#"{"permissionMode":"acceptEdits"}"#,
         )
         .expect("write settings");
@@ -615,7 +736,7 @@ mod tests {
 
         assert!(prompt.contains("# System"));
         assert!(prompt.contains("# Project context"));
-        assert!(prompt.contains("# Claude instructions"));
+        assert!(prompt.contains("# Tongji Code instructions"));
         assert!(prompt.contains("Project rules"));
         assert!(prompt.contains("permissionMode"));
         assert!(prompt.contains(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
@@ -634,10 +755,10 @@ mod tests {
     #[test]
     fn renders_instruction_file_metadata() {
         let rendered = render_instruction_files(&[ContextFile {
-            path: PathBuf::from("/tmp/project/CLAUDE.md"),
+            path: PathBuf::from("/tmp/project/TONGJI.md"),
             content: "Project rules".to_string(),
         }]);
-        assert!(rendered.contains("# Claude instructions"));
+        assert!(rendered.contains("# Tongji Code instructions"));
         assert!(rendered.contains("scope: /tmp/project"));
         assert!(rendered.contains("Project rules"));
     }

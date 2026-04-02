@@ -1,0 +1,40 @@
+{
+  "name": "tongji-code",
+  "version": "0.1.0",
+  "description": "Tongji Code CLI launcher and binary installer",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "tongji-code": "bin/tongji-code.js",
+    "tongji-code-cli": "bin/tongji-code.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node ./lib/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ceasonen/Tongji-code.git"
+  },
+  "homepage": "https://github.com/ceasonen/Tongji-code",
+  "bugs": {
+    "url": "https://github.com/ceasonen/Tongji-code/issues"
+  },
+  "keywords": [
+    "tongji-code",
+    "ai",
+    "coding-agent",
+    "cli",
+    "rust"
+  ]
+}

@@ -5,7 +5,7 @@ mod types;
 
 pub use client::{
     oauth_token_is_expired, resolve_saved_oauth_token, AnthropicClient, AuthSource, MessageStream,
-    OAuthTokenSet,
+    OAuthTokenSet, OpenAiClient, OpenAiTextResponse,
 };
 pub use error::ApiError;
 pub use sse::{parse_frame, SseParser};

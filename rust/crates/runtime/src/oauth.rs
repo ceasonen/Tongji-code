@@ -58,6 +58,7 @@ pub struct OAuthTokenExchangeRequest {
     pub client_id: String,
     pub code_verifier: String,
     pub state: String,
+    pub extra_params: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,7 @@ pub struct OAuthRefreshRequest {
     pub refresh_token: String,
     pub client_id: String,
     pub scopes: Vec<String>,
+    pub extra_params: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +81,8 @@ pub struct OAuthCallbackParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredOAuthCredentials {
+    #[serde(default)]
+    provider_id: Option<String>,
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
@@ -91,6 +95,7 @@ struct StoredOAuthCredentials {
 impl From<OAuthTokenSet> for StoredOAuthCredentials {
     fn from(value: OAuthTokenSet) -> Self {
         Self {
+            provider_id: None,
             access_token: value.access_token,
             refresh_token: value.refresh_token,
             expires_at: value.expires_at,
@@ -126,7 +131,7 @@ impl OAuthAuthorizationRequest {
             state: state.into(),
             code_challenge: pkce.challenge.clone(),
             code_challenge_method: pkce.challenge_method,
-            extra_params: BTreeMap::new(),
+            extra_params: config.authorize_params.clone(),
         }
     }
 
@@ -189,19 +194,26 @@ impl OAuthTokenExchangeRequest {
             client_id: config.client_id.clone(),
             code_verifier: verifier.into(),
             state: state.into(),
+            extra_params: config.token_params.clone(),
         }
     }
 
     #[must_use]
     pub fn form_params(&self) -> BTreeMap<&str, String> {
-        BTreeMap::from([
+        let mut params = BTreeMap::from([
             ("grant_type", self.grant_type.to_string()),
             ("code", self.code.clone()),
             ("redirect_uri", self.redirect_uri.clone()),
             ("client_id", self.client_id.clone()),
             ("code_verifier", self.code_verifier.clone()),
             ("state", self.state.clone()),
-        ])
+        ]);
+        params.extend(
+            self.extra_params
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone())),
+        );
+        params
     }
 }
 
@@ -217,17 +229,24 @@ impl OAuthRefreshRequest {
             refresh_token: refresh_token.into(),
             client_id: config.client_id.clone(),
             scopes: scopes.unwrap_or_else(|| config.scopes.clone()),
+            extra_params: config.token_params.clone(),
         }
     }
 
     #[must_use]
     pub fn form_params(&self) -> BTreeMap<&str, String> {
-        BTreeMap::from([
+        let mut params = BTreeMap::from([
             ("grant_type", self.grant_type.to_string()),
             ("refresh_token", self.refresh_token.clone()),
             ("client_id", self.client_id.clone()),
             ("scope", self.scopes.join(" ")),
-        ])
+        ]);
+        params.extend(
+            self.extra_params
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone())),
+        );
+        params
     }
 }
 
@@ -274,11 +293,20 @@ pub fn load_oauth_credentials() -> io::Result<Option<OAuthTokenSet>> {
 }
 
 pub fn save_oauth_credentials(token_set: &OAuthTokenSet) -> io::Result<()> {
+    save_oauth_credentials_for_provider(None, token_set)
+}
+
+pub fn save_oauth_credentials_for_provider(
+    provider_id: Option<&str>,
+    token_set: &OAuthTokenSet,
+) -> io::Result<()> {
     let path = credentials_path()?;
     let mut root = read_credentials_root(&path)?;
+    let mut stored = StoredOAuthCredentials::from(token_set.clone());
+    stored.provider_id = provider_id.map(str::to_string);
     root.insert(
         "oauth".to_string(),
-        serde_json::to_value(StoredOAuthCredentials::from(token_set.clone()))
+        serde_json::to_value(stored)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
     );
     write_credentials_root(&path, &root)
@@ -289,6 +317,20 @@ pub fn clear_oauth_credentials() -> io::Result<()> {
     let mut root = read_credentials_root(&path)?;
     root.remove("oauth");
     write_credentials_root(&path, &root)
+}
+
+pub fn load_oauth_provider_id() -> io::Result<Option<String>> {
+    let path = credentials_path()?;
+    let root = read_credentials_root(&path)?;
+    let Some(oauth) = root.get("oauth") else {
+        return Ok(None);
+    };
+    if oauth.is_null() {
+        return Ok(None);
+    }
+    let stored = serde_json::from_value::<StoredOAuthCredentials>(oauth.clone())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(stored.provider_id)
 }
 
 pub fn parse_oauth_callback_request_target(target: &str) -> Result<OAuthCallbackParams, String> {
@@ -324,12 +366,15 @@ fn generate_random_token(bytes: usize) -> io::Result<String> {
 }
 
 fn credentials_home_dir() -> io::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("TONGJI_CODE_CONFIG_HOME") {
+        return Ok(PathBuf::from(path));
+    }
     if let Some(path) = std::env::var_os("CLAUDE_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var_os("HOME")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claude"))
+    Ok(PathBuf::from(home).join(".tongji-code"))
 }
 
 fn read_credentials_root(path: &PathBuf) -> io::Result<Map<String, Value>> {
@@ -448,6 +493,7 @@ fn decode_hex(byte: u8) -> Result<u8, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -460,12 +506,17 @@ mod tests {
 
     fn sample_config() -> OAuthConfig {
         OAuthConfig {
+            provider_id: "anthropic".to_string(),
+            display_name: "Claude".to_string(),
             client_id: "runtime-client".to_string(),
             authorize_url: "https://console.test/oauth/authorize".to_string(),
             token_url: "https://console.test/oauth/token".to_string(),
             callback_port: Some(4545),
             manual_redirect_url: Some("https://console.test/oauth/callback".to_string()),
             scopes: vec!["org:read".to_string(), "user:write".to_string()],
+            api_base_url: None,
+            authorize_params: BTreeMap::new(),
+            token_params: BTreeMap::new(),
         }
     }
 

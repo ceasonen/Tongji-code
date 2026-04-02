@@ -1,191 +1,257 @@
-# Rewriting Project Claw Code
+# Tongji Code
 
 <p align="center">
-  <strong>⭐ The fastest repo in history to surpass 50K stars, reaching the milestone in just 2 hours after publication ⭐</strong>
+  <img src="assets/tongji-code-mark.svg" alt="Tongji Code" width="760" />
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#instructkr/claw-code&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=instructkr/claw-code&type=Date" width="600" />
-    </picture>
-  </a>
+  <strong>Tongji-flavored multi-provider coding runtime with Claude-compatible workflow logic and GPT-ready API support.</strong>
 </p>
 
-<p align="center">
-  <img src="assets/clawd-hero.jpeg" alt="Claw" width="300" />
-</p>
+Tongji Code is the continued evolution of this repository: a Python workspace that documents the clean-room porting effort, plus a Rust CLI/runtime that is usable as a local coding agent shell today.
 
-<p align="center">
-  <strong>Better Harness Tools, not merely storing the archive of leaked Claude Code</strong>
-</p>
+The project keeps the strong parts of the original Claude-style harness design:
 
-<p align="center">
-  <a href="https://github.com/sponsors/instructkr"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github&style=for-the-badge" alt="Sponsor on GitHub" /></a>
-</p>
+- session persistence and resume
+- structured slash commands
+- instruction-memory loading from repo files
+- local tool execution with permission modes
+- merged config discovery across user and project scopes
 
-> [!IMPORTANT]
-> **Rust port is now in progress** on the [`dev/rust`](https://github.com/instructkr/claw-code/tree/dev/rust) branch and is expected to be merged into main today. The Rust implementation aims to deliver a faster, memory-safe harness runtime. Stay tuned — this will be the definitive version of the project.
+On top of that, Tongji Code adds a cleaner auth story:
 
-> If you find this work useful, consider [sponsoring @instructkr on GitHub](https://github.com/sponsors/instructkr) to support continued open-source harness engineering research.
+- direct API mode for Claude and GPT-family models
+- multi-provider OAuth config with provider selection before browser login
+- provider-aware runtime routing so later prompts reuse the provider you authenticated
+- Tongji-native config and instruction paths with legacy Claude compatibility
 
----
-
-## Backstory
-
-At 4 AM on March 31, 2026, I woke up to my phone blowing up with notifications. The Claude Code source had been exposed, and the entire dev community was in a frenzy. My girlfriend in Korea was genuinely worried I might face legal action from Anthropic just for having the code on my machine — so I did what any engineer would do under pressure: I sat down, ported the core features to Python from scratch, and pushed it before the sun came up.
-
-The whole thing was orchestrated end-to-end using [oh-my-codex (OmX)](https://github.com/Yeachan-Heo/oh-my-codex) by [@bellman_ych](https://x.com/bellman_ych) — a workflow layer built on top of OpenAI's Codex ([@OpenAIDevs](https://x.com/OpenAIDevs)). I used `$team` mode for parallel code review and `$ralph` mode for persistent execution loops with architect-level verification. The entire porting session — from reading the original harness structure to producing a working Python tree with tests — was driven through OmX orchestration.
-
-The result is a clean-room Python rewrite that captures the architectural patterns of Claude Code's agent harness without copying any proprietary source. I'm now actively collaborating with [@bellman_ych](https://x.com/bellman_ych) — the creator of OmX himself — to push this further. The basic Python foundation is already in place and functional, but we're just getting started. **Stay tuned — a much more capable version is on the way.**
-
-https://github.com/instructkr/claw-code
-
-![Tweet screenshot](assets/tweet-screenshot.png)
-
-## The Creators Featured in Wall Street Journal For Avid Claude Code Fans
-
-I've been deeply interested in **harness engineering** — studying how agent systems wire tools, orchestrate tasks, and manage runtime context. This isn't a sudden thing. The Wall Street Journal featured my work earlier this month, documenting how I've been one of the most active power users exploring these systems:
-
-> AI startup worker Sigrid Jin, who attended the Seoul dinner, single-handedly used 25 billion of Claude Code tokens last year. At the time, usage limits were looser, allowing early enthusiasts to reach tens of billions of tokens at a very low cost.
->
-> Despite his countless hours with Claude Code, Jin isn't faithful to any one AI lab. The tools available have different strengths and weaknesses, he said. Codex is better at reasoning, while Claude Code generates cleaner, more shareable code.
->
-> Jin flew to San Francisco in February for Claude Code's first birthday party, where attendees waited in line to compare notes with Cherny. The crowd included a practicing cardiologist from Belgium who had built an app to help patients navigate care, and a California lawyer who made a tool for automating building permit approvals using Claude Code.
->
-> "It was basically like a sharing party," Jin said. "There were lawyers, there were doctors, there were dentists. They did not have software engineering backgrounds."
->
-> — *The Wall Street Journal*, March 21, 2026, [*"The Trillion Dollar Race to Automate Our Entire Lives"*](https://lnkd.in/gs9td3qd)
-
-![WSJ Feature](assets/wsj-feature.png)
-
----
-
-## Porting Status
-
-The main source tree is now Python-first.
-
-- `src/` contains the active Python porting workspace
-- `tests/` verifies the current Python workspace
-- the exposed snapshot is no longer part of the tracked repository state
-
-The current Python workspace is not yet a complete one-to-one replacement for the original system, but the primary implementation surface is now Python.
-
-## Why this rewrite exists
-
-I originally studied the exposed codebase to understand its harness, tool wiring, and agent workflow. After spending more time with the legal and ethical questions—and after reading the essay linked below—I did not want the exposed snapshot itself to remain the main tracked source tree.
-
-This repository now focuses on Python porting work instead.
-
-## Repository Layout
+## Workspace layout
 
 ```text
 .
-├── src/                                # Python porting workspace
-│   ├── __init__.py
-│   ├── commands.py
-│   ├── main.py
-│   ├── models.py
-│   ├── port_manifest.py
-│   ├── query_engine.py
-│   ├── task.py
-│   └── tools.py
-├── tests/                              # Python verification
-├── assets/omx/                         # OmX workflow screenshots
-├── 2026-03-09-is-legal-the-same-as-legitimate-ai-reimplementation-and-the-erosion-of-copyleft.md
-└── README.md
+├── assets/                         # Branding and documentation assets
+├── src/                            # Python analysis / porting workspace
+├── tests/                          # Python verification
+└── rust/                           # Rust CLI/runtime workspace
+    ├── Cargo.toml
+    ├── README.md
+    └── crates/
+        ├── api/                    # Anthropic + OpenAI-compatible clients
+        ├── commands/               # Shared slash-command metadata
+        ├── compat-harness/         # Upstream manifest extraction helpers
+        ├── runtime/                # Config, prompts, sessions, OAuth, MCP
+        ├── tongji-code-cli/        # Main CLI binary
+        └── tools/                  # Built-in tools
 ```
 
-## Python Workspace Overview
+## Core capabilities
 
-The new Python `src/` tree currently provides:
-
-- **`port_manifest.py`** — summarizes the current Python workspace structure
-- **`models.py`** — dataclasses for subsystems, modules, and backlog state
-- **`commands.py`** — Python-side command port metadata
-- **`tools.py`** — Python-side tool port metadata
-- **`query_engine.py`** — renders a Python porting summary from the active workspace
-- **`main.py`** — a CLI entrypoint for manifest and summary output
+- `Python workspace`: generates a structured summary of the mirrored source surface and porting state
+- `Rust CLI`: interactive REPL, prompt mode, session inspection, config/memory reports, init scaffolding, diff/export helpers
+- `Claude path`: Anthropic API key or OAuth-backed bearer auth
+- `GPT path`: `OPENAI_API_KEY` for direct OpenAI usage, plus OAuth-backed OpenAI-compatible providers when `apiBaseUrl` is configured
+- `Compatibility`: supports both `TONGJI.md` / `.tongji/settings*.json` and legacy `CLAUDE.md` / `.claude/settings*.json`
 
 ## Quickstart
 
-Render the Python porting summary:
+### Python summary workspace
 
 ```bash
 python3 -m src.main summary
-```
-
-Print the current Python workspace manifest:
-
-```bash
 python3 -m src.main manifest
+python3 -m unittest discover -s tests -v
 ```
 
-List the current Python modules:
+### Rust CLI
 
 ```bash
-python3 -m src.main subsystems --limit 16
+cd rust
+cargo build -p tongji-code-cli
+cargo run -p tongji-code-cli -- --help
 ```
 
-Run verification:
+### Global install via npm
+
+```bash
+npm install -g tongji-code
+tongji-code --help
+```
+
+### One-shot prompt examples
+
+Claude-family model:
+
+```bash
+cd rust
+ANTHROPIC_API_KEY=... cargo run -p tongji-code-cli -- --model claude-sonnet-4-20250514 prompt "Summarize this repository"
+```
+
+GPT-family model:
+
+```bash
+cd rust
+OPENAI_API_KEY=... cargo run -p tongji-code-cli -- --model gpt-4.1 prompt "Summarize this repository"
+```
+
+Interactive shell:
+
+```bash
+cd rust
+cargo run -p tongji-code-cli --
+```
+
+## Auth model
+
+Tongji Code now supports two auth modes.
+
+### 1. Direct API credentials
+
+- `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` for Claude-family models
+- `OPENAI_API_KEY` for GPT-family models
+- `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` for API endpoint overrides
+
+### 2. OAuth provider login
+
+`tongji-code-cli login [provider]` loads configured OAuth providers, lets you choose one first, then opens the browser-based flow. The selected provider id is stored with the credential so future runs can resolve the right backend again.
+
+Examples:
+
+```bash
+cd rust
+cargo run -p tongji-code-cli -- login
+cargo run -p tongji-code-cli -- login anthropic
+cargo run -p tongji-code-cli -- logout
+```
+
+## Multi-provider OAuth config
+
+Preferred format:
+
+```json
+{
+  "auth": {
+    "defaultProvider": "anthropic",
+    "oauthProviders": {
+      "anthropic": {
+        "displayName": "Claude",
+        "clientId": "anthropic-client-id",
+        "authorizeUrl": "https://console.anthropic.com/oauth/authorize",
+        "tokenUrl": "https://console.anthropic.com/oauth/token",
+        "callbackPort": 4545,
+        "scopes": ["org:read", "user:write"]
+      },
+      "gpt-gateway": {
+        "displayName": "GPT Gateway",
+        "clientId": "gateway-client-id",
+        "authorizeUrl": "https://gateway.example.com/oauth/authorize",
+        "tokenUrl": "https://gateway.example.com/oauth/token",
+        "callbackPort": 4546,
+        "apiBaseUrl": "https://gateway.example.com/v1",
+        "scopes": ["responses:write"],
+        "authorizeParams": {
+          "audience": "tongji-code"
+        }
+      }
+    }
+  }
+}
+```
+
+Where to place it:
+
+- user scope: `~/.tongji-code/settings.json`
+- project scope: `.tongji/settings.json`
+- local override: `.tongji/settings.local.json`
+
+Legacy Claude-compatible locations still load:
+
+- `~/.claude/settings.json`
+- `.claude/settings.json`
+- `.claude/settings.local.json`
+
+Notes:
+
+- `settings.oauth` is still accepted as a legacy single-provider format.
+- For GPT/OpenAI-compatible OAuth providers, set `apiBaseUrl`. Tongji Code uses that field to decide whether an OAuth credential can drive the GPT runtime.
+- Direct OpenAI usage remains simplest with `OPENAI_API_KEY`.
+
+## Instruction memory
+
+Tongji Code loads repo guidance from these files while walking upward from the current directory:
+
+- `TONGJI.md`
+- `TONGJI.local.md`
+- `.tongji/TONGJI.md`
+- legacy `CLAUDE.md`
+- legacy `CLAUDE.local.md`
+- legacy `.claude/CLAUDE.md`
+
+The `/init` command now creates a starter `TONGJI.md` and avoids overwriting an existing Tongji or legacy Claude instruction file.
+
+## Runtime selection
+
+The CLI automatically maps models to providers:
+
+- Claude-style models default to the Anthropic path
+- `gpt-*`, `o1*`, `o3*`, `o4*`, and `chatgpt*` models use the OpenAI-compatible path
+
+You can override detection with:
+
+```bash
+export TONGJI_CODE_PROVIDER=anthropic
+export TONGJI_CODE_PROVIDER=openai
+```
+
+## Useful commands
+
+Inside the REPL:
+
+```text
+/help
+/status
+/model gpt-4.1
+/permissions workspace-write
+/memory
+/config
+/init
+/diff
+/export notes.md
+/exit
+```
+
+## Verification
+
+Python:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Run the parity audit against the local ignored archive (when present):
+Rust:
 
 ```bash
-python3 -m src.main parity-audit
+cd rust
+cargo test --workspace --exclude compat-harness
 ```
 
-Inspect mirrored command/tool inventories:
+If you only want the main product surface:
 
 ```bash
-python3 -m src.main commands --limit 10
-python3 -m src.main tools --limit 10
+cd rust
+cargo test -p tongji-code-cli
+cargo test -p api
 ```
 
-## Current Parity Checkpoint
+## Distribution
 
-The port now mirrors the archived root-entry file surface, top-level subsystem names, and command/tool inventories much more closely than before. However, it is **not yet** a full runtime-equivalent replacement for the original TypeScript system; the Python tree still contains fewer executable runtime slices than the archived source.
+Tongji Code is now set up for npm-style CLI distribution:
 
+- npm package source lives in `npm/`
+- the package installs a lightweight Node launcher
+- the launcher downloads the matching prebuilt `tongji-code-cli` binary from GitHub Releases
+- `.github/workflows/release.yml` builds release binaries and publishes the npm package on `v*` tags
 
-## Built with `oh-my-codex`
+## Disclaimer
 
-The restructuring and documentation work on this repository was AI-assisted and orchestrated with Yeachan Heo's [oh-my-codex (OmX)](https://github.com/Yeachan-Heo/oh-my-codex), layered on top of Codex.
-
-- **`$team` mode:** used for coordinated parallel review and architectural feedback
-- **`$ralph` mode:** used for persistent execution, verification, and completion discipline
-- **Codex-driven workflow:** used to turn the main `src/` tree into a Python-first porting workspace
-
-### OmX workflow screenshots
-
-![OmX workflow screenshot 1](assets/omx/omx-readme-review-1.png)
-
-*Ralph/team orchestration view while the README and essay context were being reviewed in terminal panes.*
-
-![OmX workflow screenshot 2](assets/omx/omx-readme-review-2.png)
-
-*Split-pane review and verification flow during the final README wording pass.*
-
-## Community
-
-<p align="center">
-  <a href="https://instruct.kr/"><img src="assets/instructkr.png" alt="instructkr" width="400" /></a>
-</p>
-
-Join the [**instructkr Discord**](https://instruct.kr/) — the best Korean language model community. Come chat about LLMs, harness engineering, agent workflows, and everything in between.
-
-[![Discord](https://img.shields.io/badge/Join%20Discord-instruct.kr-5865F2?logo=discord&style=for-the-badge)](https://instruct.kr/)
-
-## Star History
-
-See the chart at the top of this README.
-
-## Ownership / Affiliation Disclaimer
-
-- This repository does **not** claim ownership of the original Claude Code source material.
-- This repository is **not affiliated with, endorsed by, or maintained by Anthropic**.
+- Tongji Code is an independent project and is not affiliated with Anthropic or OpenAI.
+- Legacy Claude-compatible paths are kept for migration and interoperability, not for branding.

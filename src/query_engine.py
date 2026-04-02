@@ -172,7 +172,7 @@ class QueryEnginePort:
         command_backlog = build_command_backlog()
         tool_backlog = build_tool_backlog()
         sections = [
-            '# Python Porting Workspace Summary',
+            '# Tongji Code Workspace Summary',
             '',
             self.manifest.to_markdown(),
             '',

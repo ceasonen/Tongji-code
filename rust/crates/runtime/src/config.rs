@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use crate::json::JsonValue;
 
 pub const CLAUDE_CODE_SETTINGS_SCHEMA_NAME: &str = "SettingsSchema";
+const TONGJI_CODE_CONFIG_HOME_ENV: &str = "TONGJI_CODE_CONFIG_HOME";
+const LEGACY_CLAUDE_CONFIG_HOME_ENV: &str = "CLAUDE_CONFIG_HOME";
+const TONGJI_CODE_CONFIG_DIRNAME: &str = ".tongji-code";
+const LEGACY_CLAUDE_CONFIG_DIRNAME: &str = ".claude";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ConfigSource {
@@ -31,6 +35,8 @@ pub struct RuntimeConfig {
 pub struct RuntimeFeatureConfig {
     mcp: McpConfigCollection,
     oauth: Option<OAuthConfig>,
+    oauth_default_provider: Option<String>,
+    oauth_providers: BTreeMap<String, OAuthConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -107,12 +113,17 @@ pub struct McpOAuthConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthConfig {
+    pub provider_id: String,
+    pub display_name: String,
     pub client_id: String,
     pub authorize_url: String,
     pub token_url: String,
     pub callback_port: Option<u16>,
     pub manual_redirect_url: Option<String>,
     pub scopes: Vec<String>,
+    pub api_base_url: Option<String>,
+    pub authorize_params: BTreeMap<String, String>,
+    pub token_params: BTreeMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -141,44 +152,59 @@ impl From<std::io::Error> for ConfigError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigLoader {
     cwd: PathBuf,
-    config_home: PathBuf,
+    preferred_config_home: PathBuf,
+    legacy_config_home: PathBuf,
 }
 
 impl ConfigLoader {
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>, config_home: impl Into<PathBuf>) -> Self {
+        let config_home = config_home.into();
         Self {
             cwd: cwd.into(),
-            config_home: config_home.into(),
+            preferred_config_home: config_home.clone(),
+            legacy_config_home: config_home,
         }
     }
 
     #[must_use]
     pub fn default_for(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
-        let config_home = std::env::var_os("CLAUDE_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
-            .unwrap_or_else(|| PathBuf::from(".claude"));
-        Self { cwd, config_home }
+        Self {
+            cwd,
+            preferred_config_home: preferred_config_home_dir(),
+            legacy_config_home: legacy_config_home_dir(),
+        }
     }
 
     #[must_use]
     pub fn discover(&self) -> Vec<ConfigEntry> {
-        vec![
+        dedupe_config_entries(vec![
             ConfigEntry {
                 source: ConfigSource::User,
-                path: self.config_home.join("settings.json"),
+                path: self.legacy_config_home.join("settings.json"),
+            },
+            ConfigEntry {
+                source: ConfigSource::User,
+                path: self.preferred_config_home.join("settings.json"),
             },
             ConfigEntry {
                 source: ConfigSource::Project,
                 path: self.cwd.join(".claude").join("settings.json"),
             },
             ConfigEntry {
+                source: ConfigSource::Project,
+                path: self.cwd.join(".tongji").join("settings.json"),
+            },
+            ConfigEntry {
                 source: ConfigSource::Local,
                 path: self.cwd.join(".claude").join("settings.local.json"),
             },
-        ]
+            ConfigEntry {
+                source: ConfigSource::Local,
+                path: self.cwd.join(".tongji").join("settings.local.json"),
+            },
+        ])
     }
 
     pub fn load(&self) -> Result<RuntimeConfig, ConfigError> {
@@ -195,14 +221,23 @@ impl ConfigLoader {
             loaded_entries.push(entry);
         }
 
+        let merged_json = JsonValue::Object(merged.clone());
+        let legacy_oauth = parse_optional_oauth_config(&merged_json, "merged settings.oauth")?;
+        let (oauth_default_provider, mut oauth_providers) =
+            parse_oauth_provider_map(&merged_json, "merged settings.auth")?;
+        if oauth_providers.is_empty() {
+            if let Some(oauth) = &legacy_oauth {
+                oauth_providers.insert(oauth.provider_id.clone(), oauth.clone());
+            }
+        }
+
         let feature_config = RuntimeFeatureConfig {
             mcp: McpConfigCollection {
                 servers: mcp_servers,
             },
-            oauth: parse_optional_oauth_config(
-                &JsonValue::Object(merged.clone()),
-                "merged settings.oauth",
-            )?,
+            oauth: legacy_oauth,
+            oauth_default_provider,
+            oauth_providers,
         };
 
         Ok(RuntimeConfig {
@@ -211,6 +246,40 @@ impl ConfigLoader {
             feature_config,
         })
     }
+}
+
+fn preferred_config_home_dir() -> PathBuf {
+    std::env::var_os(TONGJI_CODE_CONFIG_HOME_ENV)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(TONGJI_CODE_CONFIG_DIRNAME))
+        })
+        .unwrap_or_else(|| PathBuf::from(TONGJI_CODE_CONFIG_DIRNAME))
+}
+
+fn legacy_config_home_dir() -> PathBuf {
+    std::env::var_os(LEGACY_CLAUDE_CONFIG_HOME_ENV)
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(LEGACY_CLAUDE_CONFIG_DIRNAME))
+        })
+        .unwrap_or_else(|| PathBuf::from(LEGACY_CLAUDE_CONFIG_DIRNAME))
+}
+
+fn dedupe_config_entries(entries: Vec<ConfigEntry>) -> Vec<ConfigEntry> {
+    let mut deduped = Vec::new();
+    for entry in entries {
+        if deduped
+            .iter()
+            .any(|seen: &ConfigEntry| seen.path == entry.path)
+        {
+            continue;
+        }
+        deduped.push(entry);
+    }
+    deduped
 }
 
 impl RuntimeConfig {
@@ -255,7 +324,17 @@ impl RuntimeConfig {
 
     #[must_use]
     pub fn oauth(&self) -> Option<&OAuthConfig> {
-        self.feature_config.oauth.as_ref()
+        self.feature_config.oauth()
+    }
+
+    #[must_use]
+    pub fn oauth_provider(&self, provider_id: &str) -> Option<&OAuthConfig> {
+        self.feature_config.oauth_provider(provider_id)
+    }
+
+    #[must_use]
+    pub fn oauth_profiles(&self) -> Vec<&OAuthConfig> {
+        self.feature_config.oauth_profiles()
     }
 }
 
@@ -267,7 +346,41 @@ impl RuntimeFeatureConfig {
 
     #[must_use]
     pub fn oauth(&self) -> Option<&OAuthConfig> {
-        self.oauth.as_ref()
+        self.oauth_default_provider
+            .as_deref()
+            .and_then(|provider_id| self.oauth_provider(provider_id))
+            .or_else(|| {
+                if self.oauth_providers.len() == 1 {
+                    self.oauth_providers.values().next()
+                } else {
+                    None
+                }
+            })
+            .or(self.oauth.as_ref())
+    }
+
+    #[must_use]
+    pub fn oauth_provider(&self, provider_id: &str) -> Option<&OAuthConfig> {
+        self.oauth_providers.get(provider_id).or_else(|| {
+            self.oauth
+                .as_ref()
+                .filter(|oauth| oauth.provider_id == provider_id)
+        })
+    }
+
+    #[must_use]
+    pub fn oauth_profiles(&self) -> Vec<&OAuthConfig> {
+        if self.oauth_providers.is_empty() {
+            return self.oauth.iter().collect();
+        }
+
+        let mut profiles = self.oauth_providers.values().collect::<Vec<_>>();
+        if let Some(oauth) = &self.oauth {
+            if !self.oauth_providers.contains_key(&oauth.provider_id) {
+                profiles.push(oauth);
+            }
+        }
+        profiles
     }
 }
 
@@ -363,6 +476,42 @@ fn parse_optional_oauth_config(
         return Ok(None);
     };
     let object = expect_object(oauth_value, context)?;
+    Ok(Some(parse_oauth_config_object(
+        object,
+        optional_string(object, "provider", context)?.unwrap_or("anthropic"),
+        context,
+    )?))
+}
+
+fn parse_oauth_provider_map(
+    root: &JsonValue,
+    context: &str,
+) -> Result<(Option<String>, BTreeMap<String, OAuthConfig>), ConfigError> {
+    let Some(auth_value) = root.as_object().and_then(|object| object.get("auth")) else {
+        return Ok((None, BTreeMap::new()));
+    };
+    let auth_object = expect_object(auth_value, context)?;
+    let default_provider =
+        optional_string(auth_object, "defaultProvider", context)?.map(str::to_string);
+    let Some(providers_value) = auth_object.get("oauthProviders") else {
+        return Ok((default_provider, BTreeMap::new()));
+    };
+    let providers_object = expect_object(providers_value, &format!("{context}.oauthProviders"))?;
+    let mut providers = BTreeMap::new();
+    for (provider_id, value) in providers_object {
+        let provider_context = format!("{context}.oauthProviders.{provider_id}");
+        let object = expect_object(value, &provider_context)?;
+        let config = parse_oauth_config_object(object, provider_id, &provider_context)?;
+        providers.insert(provider_id.clone(), config);
+    }
+    Ok((default_provider, providers))
+}
+
+fn parse_oauth_config_object(
+    object: &BTreeMap<String, JsonValue>,
+    provider_id: &str,
+    context: &str,
+) -> Result<OAuthConfig, ConfigError> {
     let client_id = expect_string(object, "clientId", context)?.to_string();
     let authorize_url = expect_string(object, "authorizeUrl", context)?.to_string();
     let token_url = expect_string(object, "tokenUrl", context)?.to_string();
@@ -370,14 +519,41 @@ fn parse_optional_oauth_config(
     let manual_redirect_url =
         optional_string(object, "manualRedirectUrl", context)?.map(str::to_string);
     let scopes = optional_string_array(object, "scopes", context)?.unwrap_or_default();
-    Ok(Some(OAuthConfig {
+    let display_name = optional_string(object, "displayName", context)?
+        .map(str::to_string)
+        .unwrap_or_else(|| humanize_provider_id(provider_id));
+    let api_base_url = optional_string(object, "apiBaseUrl", context)?.map(str::to_string);
+    let authorize_params =
+        optional_string_map(object, "authorizeParams", context)?.unwrap_or_default();
+    let token_params = optional_string_map(object, "tokenParams", context)?.unwrap_or_default();
+    Ok(OAuthConfig {
+        provider_id: provider_id.to_string(),
+        display_name,
         client_id,
         authorize_url,
         token_url,
         callback_port,
         manual_redirect_url,
         scopes,
-    }))
+        api_base_url,
+        authorize_params,
+        token_params,
+    })
+}
+
+fn humanize_provider_id(provider_id: &str) -> String {
+    provider_id
+        .split(['-', '_'])
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn parse_mcp_server_config(

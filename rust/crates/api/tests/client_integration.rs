@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use api::{
     AnthropicClient, ApiError, ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent,
-    InputContentBlock, InputMessage, MessageDeltaEvent, MessageRequest, OutputContentBlock,
-    StreamEvent, ToolChoice, ToolDefinition,
+    InputContentBlock, InputMessage, MessageDeltaEvent, MessageRequest, OpenAiClient,
+    OutputContentBlock, StreamEvent, ToolChoice, ToolDefinition,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -193,6 +193,51 @@ async fn retries_retryable_failures_before_succeeding() {
 
     assert_eq!(response.total_tokens(), 5);
     assert_eq!(state.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn openai_create_response_posts_responses_request() {
+    let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
+    let body = concat!(
+        "{",
+        "\"id\":\"resp_test\",",
+        "\"model\":\"gpt-4.1\",",
+        "\"output_text\":\"Hello from GPT\",",
+        "\"usage\":{\"input_tokens\":9,\"output_tokens\":5}",
+        "}"
+    );
+    let server = spawn_server(
+        state.clone(),
+        vec![http_response("200 OK", "application/json", body)],
+    )
+    .await;
+
+    let client = OpenAiClient::new("test-openai-key").with_base_url(server.base_url());
+    let response = client
+        .create_response("gpt-4.1", "Say hello", Some("Be concise"))
+        .await
+        .expect("response request should succeed");
+
+    assert_eq!(response.id, "resp_test");
+    assert_eq!(response.model.as_deref(), Some("gpt-4.1"));
+    assert_eq!(response.text, "Hello from GPT");
+    assert_eq!(response.input_tokens, 9);
+    assert_eq!(response.output_tokens, 5);
+
+    let captured = state.lock().await;
+    let request = captured.first().expect("server should capture request");
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.path, "/responses");
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("Bearer test-openai-key")
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&request.body).expect("request body should be json");
+    assert_eq!(body["model"], json!("gpt-4.1"));
+    assert_eq!(body["input"], json!("Say hello"));
+    assert_eq!(body["instructions"], json!("Be concise"));
+    assert_eq!(body["stream"], json!(false));
 }
 
 #[tokio::test]

@@ -54,7 +54,7 @@ impl Display for ApiError {
             Self::MissingApiKey => {
                 write!(
                     f,
-                    "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is not set; export one before calling the Anthropic API"
+                    "API credentials are not configured; export ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY for Claude, OPENAI_API_KEY for GPT, or log in to a configured OAuth provider"
                 )
             }
             Self::ExpiredOAuthToken => {
@@ -67,7 +67,7 @@ impl Display for ApiError {
             Self::InvalidApiKeyEnv(error) => {
                 write!(
                     f,
-                    "failed to read ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY: {error}"
+                    "failed to read API credential environment variables: {error}"
                 )
             }
             Self::Http(error) => write!(f, "http error: {error}"),
@@ -83,17 +83,17 @@ impl Display for ApiError {
                 (Some(error_type), Some(message)) => {
                     write!(
                         f,
-                        "anthropic api returned {status} ({error_type}): {message}"
+                        "provider api returned {status} ({error_type}): {message}"
                     )
                 }
-                _ => write!(f, "anthropic api returned {status}: {body}"),
+                _ => write!(f, "provider api returned {status}: {body}"),
             },
             Self::RetriesExhausted {
                 attempts,
                 last_error,
             } => write!(
                 f,
-                "anthropic api failed after {attempts} attempts: {last_error}"
+                "provider api failed after {attempts} attempts: {last_error}"
             ),
             Self::InvalidSseFrame(message) => write!(f, "invalid sse frame: {message}"),
             Self::BackoffOverflow {

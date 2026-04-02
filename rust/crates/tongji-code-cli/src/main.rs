@@ -11,21 +11,22 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use api::{
-    resolve_saved_oauth_token, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    resolve_saved_oauth_token, AnthropicClient, ApiError, AuthSource, ContentBlockDelta,
+    InputContentBlock, InputMessage, MessageRequest, MessageResponse, OpenAiClient,
+    OutputContentBlock, StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition,
+    ToolResultContentBlock,
 };
 
 use commands::{render_slash_command_help, resume_supported_slash_commands, SlashCommand};
 use compat_harness::{extract_manifest, UpstreamPaths};
 use render::{Spinner, TerminalRenderer};
 use runtime::{
-    clear_oauth_credentials, generate_pkce_pair, generate_state, load_system_prompt,
-    parse_oauth_callback_request_target, save_oauth_credentials, ApiClient, ApiRequest,
-    AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource, ContentBlock,
-    ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest,
-    OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext, RuntimeError,
-    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
+    clear_oauth_credentials, generate_pkce_pair, generate_state, load_oauth_provider_id,
+    load_system_prompt, parse_oauth_callback_request_target, save_oauth_credentials_for_provider,
+    ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource,
+    ContentBlock, ConversationMessage, ConversationRuntime, MessageRole, OAuthAuthorizationRequest,
+    OAuthConfig, OAuthTokenExchangeRequest, PermissionMode, PermissionPolicy, ProjectContext,
+    RuntimeConfig, RuntimeError, Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde_json::json;
 use tools::{execute_tool, mvp_tool_specs};
@@ -34,6 +35,7 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 const DEFAULT_MAX_TOKENS: u32 = 32;
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_TARGET: Option<&str> = option_env!("TARGET");
 const GIT_SHA: Option<&str> = option_env!("GIT_SHA");
@@ -45,7 +47,7 @@ fn main() {
         eprintln!(
             "error: {error}
 
-Run `rusty-claude-cli --help` for usage."
+Run `tongji-code-cli --help` for usage."
         );
         std::process::exit(1);
     }
@@ -69,7 +71,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             allowed_tools,
         } => LiveCli::new(model, false, allowed_tools)?
             .run_turn_with_output(&prompt, output_format)?,
-        CliAction::Login => run_login()?,
+        CliAction::Login { provider } => run_login(provider.as_deref())?,
         CliAction::Logout => run_logout()?,
         CliAction::Repl {
             model,
@@ -99,7 +101,9 @@ enum CliAction {
         output_format: CliOutputFormat,
         allowed_tools: Option<AllowedToolSet>,
     },
-    Login,
+    Login {
+        provider: Option<String>,
+    },
     Logout,
     Repl {
         model: String,
@@ -208,7 +212,9 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "dump-manifests" => Ok(CliAction::DumpManifests),
         "bootstrap-plan" => Ok(CliAction::BootstrapPlan),
         "system-prompt" => parse_system_prompt_args(&rest[1..]),
-        "login" => Ok(CliAction::Login),
+        "login" => Ok(CliAction::Login {
+            provider: rest.get(1).cloned(),
+        }),
         "logout" => Ok(CliAction::Logout),
         "prompt" => {
             let prompt = rest[1..].join(" ");
@@ -350,20 +356,15 @@ fn dump_manifests() {
 }
 
 fn print_bootstrap_plan() {
-    for phase in runtime::BootstrapPlan::claude_code_default().phases() {
+    for phase in runtime::BootstrapPlan::tongji_code_default().phases() {
         println!("- {phase:?}");
     }
 }
 
-fn run_login() -> Result<(), Box<dyn std::error::Error>> {
+fn run_login(requested_provider: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let config = ConfigLoader::default_for(&cwd).load()?;
-    let oauth = config.oauth().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "OAuth config is missing. Add settings.oauth.clientId/authorizeUrl/tokenUrl first.",
-        )
-    })?;
+    let oauth = resolve_login_oauth_provider(&config, requested_provider)?;
     let callback_port = oauth.callback_port.unwrap_or(DEFAULT_OAUTH_CALLBACK_PORT);
     let redirect_uri = runtime::loopback_redirect_uri(callback_port);
     let pkce = generate_pkce_pair()?;
@@ -372,7 +373,8 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
         OAuthAuthorizationRequest::from_config(oauth, redirect_uri.clone(), state.clone(), &pkce)
             .build_url();
 
-    println!("Starting Claude OAuth login...");
+    println!("Starting Tongji Code OAuth login...");
+    println!("Provider: {} ({})", oauth.display_name, oauth.provider_id);
     println!("Listening for callback on {redirect_uri}");
     if let Err(error) = open_browser(&authorize_url) {
         eprintln!("warning: failed to open browser automatically: {error}");
@@ -401,19 +403,125 @@ fn run_login() -> Result<(), Box<dyn std::error::Error>> {
         OAuthTokenExchangeRequest::from_config(oauth, code, state, pkce.verifier, redirect_uri);
     let runtime = tokio::runtime::Runtime::new()?;
     let token_set = runtime.block_on(client.exchange_oauth_code(oauth, &exchange_request))?;
-    save_oauth_credentials(&runtime::OAuthTokenSet {
-        access_token: token_set.access_token,
-        refresh_token: token_set.refresh_token,
-        expires_at: token_set.expires_at,
-        scopes: token_set.scopes,
-    })?;
-    println!("Claude OAuth login complete.");
+    save_oauth_credentials_for_provider(
+        Some(&oauth.provider_id),
+        &runtime::OAuthTokenSet {
+            access_token: token_set.access_token,
+            refresh_token: token_set.refresh_token,
+            expires_at: token_set.expires_at,
+            scopes: token_set.scopes,
+        },
+    )?;
+    println!("Tongji Code OAuth login complete.");
     Ok(())
+}
+
+fn resolve_login_oauth_provider<'a>(
+    config: &'a RuntimeConfig,
+    requested_provider: Option<&str>,
+) -> Result<&'a OAuthConfig, Box<dyn std::error::Error>> {
+    let profiles = config.oauth_profiles();
+    if profiles.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "OAuth config is missing. Add settings.oauth or settings.auth.oauthProviders first.",
+        )
+        .into());
+    }
+    let available = format_oauth_provider_list(&profiles);
+
+    if let Some(requested) = requested_provider {
+        return profiles
+            .iter()
+            .copied()
+            .find(|profile| oauth_provider_matches(profile, requested))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "unknown OAuth provider '{requested}'. Available providers: {}",
+                        available
+                    ),
+                )
+                .into()
+            });
+    }
+
+    if profiles.len() == 1 {
+        return Ok(profiles[0]);
+    }
+
+    let default_provider = config.oauth();
+    println!("Available OAuth providers:");
+    for (index, profile) in profiles.iter().enumerate() {
+        let marker = if default_provider
+            .is_some_and(|default_profile| default_profile.provider_id == profile.provider_id)
+        {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "  {}. {} ({}){}",
+            index + 1,
+            profile.display_name,
+            profile.provider_id,
+            marker
+        );
+    }
+    print!(
+        "Select provider [1-{}]{}: ",
+        profiles.len(),
+        default_provider.map_or_else(String::new, |provider| {
+            format!(", default {}", provider.provider_id)
+        })
+    );
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return default_provider
+            .or_else(|| profiles.first().copied())
+            .ok_or_else(|| io::Error::other("no OAuth providers configured").into());
+    }
+    if let Ok(index) = trimmed.parse::<usize>() {
+        if (1..=profiles.len()).contains(&index) {
+            return Ok(profiles[index - 1]);
+        }
+    }
+    profiles
+        .iter()
+        .copied()
+        .find(|profile| oauth_provider_matches(profile, trimmed))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown OAuth provider '{trimmed}'. Available providers: {}",
+                    available
+                ),
+            )
+            .into()
+        })
+}
+
+fn oauth_provider_matches(profile: &OAuthConfig, requested: &str) -> bool {
+    profile.provider_id.eq_ignore_ascii_case(requested)
+        || profile.display_name.eq_ignore_ascii_case(requested)
+}
+
+fn format_oauth_provider_list(profiles: &[&OAuthConfig]) -> String {
+    profiles
+        .iter()
+        .map(|profile| profile.provider_id.clone())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn run_logout() -> Result<(), Box<dyn std::error::Error>> {
     clear_oauth_credentials()?;
-    println!("Claude OAuth credentials cleared.");
+    println!("Tongji Code OAuth credentials cleared.");
     Ok(())
 }
 
@@ -458,9 +566,9 @@ fn wait_for_oauth_callback(
     let callback = parse_oauth_callback_request_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let body = if callback.error.is_some() {
-        "Claude OAuth login failed. You can close this window."
+        "Tongji Code OAuth login failed. You can close this window."
     } else {
-        "Claude OAuth login succeeded. You can close this window."
+        "Tongji Code OAuth login succeeded. You can close this window."
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -658,7 +766,7 @@ fn format_init_report(path: &Path, created: bool) -> String {
     if created {
         format!(
             "Init
-  CLAUDE.md        {}
+  TONGJI.md        {}
   Result           created
   Next step        Review and tailor the generated guidance",
             path.display()
@@ -666,7 +774,7 @@ fn format_init_report(path: &Path, created: bool) -> String {
     } else {
         format!(
             "Init
-  CLAUDE.md        {}
+  TONGJI.md        {}
   Result           skipped (already exists)
   Next step        Edit the existing file intentionally if workflows changed",
             path.display()
@@ -882,7 +990,7 @@ struct LiveCli {
     model: String,
     allowed_tools: Option<AllowedToolSet>,
     system_prompt: Vec<String>,
-    runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+    runtime: ConversationRuntime<ProviderRuntimeClient, CliToolExecutor>,
     session: SessionHandle,
 }
 
@@ -914,7 +1022,11 @@ impl LiveCli {
 
     fn startup_banner(&self) -> String {
         format!(
-            "Rusty Claude CLI\n  Model            {}\n  Working directory {}\n  Session          {}\n\nType /help for commands. Shift+Enter or Ctrl+J inserts a newline.",
+            "Tongji Code CLI\n  Provider         {}\n  Model            {}\n  Working directory {}\n  Session          {}\n\nType /help for commands. Shift+Enter or Ctrl+J inserts a newline.",
+            match RuntimeProvider::detect(&self.model) {
+                RuntimeProvider::Anthropic => "anthropic",
+                RuntimeProvider::OpenAi => "openai",
+            },
             self.model,
             env::current_dir().map_or_else(
                 |_| "<unknown>".to_string(),
@@ -928,7 +1040,7 @@ impl LiveCli {
         let mut spinner = Spinner::new();
         let mut stdout = io::stdout();
         spinner.tick(
-            "Waiting for Claude",
+            "Waiting for Tongji Code",
             TerminalRenderer::new().color_theme(),
             &mut stdout,
         )?;
@@ -936,7 +1048,7 @@ impl LiveCli {
         match result {
             Ok(_) => {
                 spinner.finish(
-                    "Claude response complete",
+                    "Tongji Code response complete",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -946,7 +1058,7 @@ impl LiveCli {
             }
             Err(error) => {
                 spinner.fail(
-                    "Claude request failed",
+                    "Tongji Code request failed",
                     TerminalRenderer::new().color_theme(),
                     &mut stdout,
                 )?;
@@ -1307,7 +1419,7 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claude").join("sessions");
+    let path = cwd.join(".tongji").join("sessions");
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -1586,7 +1698,7 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     if project_context.instruction_files.is_empty() {
         lines.push("Discovered files".to_string());
         lines.push(
-            "  No CLAUDE instruction files discovered in the current directory ancestry."
+            "  No TONGJI.md / CLAUDE.md instruction files discovered in the current directory ancestry."
                 .to_string(),
         );
     } else {
@@ -1614,21 +1726,25 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
 
 fn init_claude_md() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let claude_md = cwd.join("CLAUDE.md");
-    if claude_md.exists() {
-        return Ok(format_init_report(&claude_md, false));
+    let tongji_md = cwd.join("TONGJI.md");
+    if tongji_md.exists() {
+        return Ok(format_init_report(&tongji_md, false));
+    }
+    let legacy_claude_md = cwd.join("CLAUDE.md");
+    if legacy_claude_md.exists() {
+        return Ok(format_init_report(&legacy_claude_md, false));
     }
 
     let content = render_init_claude_md(&cwd);
-    fs::write(&claude_md, content)?;
-    Ok(format_init_report(&claude_md, true))
+    fs::write(&tongji_md, content)?;
+    Ok(format_init_report(&tongji_md, true))
 }
 
 fn render_init_claude_md(cwd: &Path) -> String {
     let mut lines = vec![
-        "# CLAUDE.md".to_string(),
+        "# TONGJI.md".to_string(),
         String::new(),
-        "This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.".to_string(),
+        "This file provides guidance to Tongji Code and Claude-compatible coding agents when working with code in this repository.".to_string(),
         String::new(),
     ];
 
@@ -1668,7 +1784,7 @@ fn render_init_claude_md(cwd: &Path) -> String {
 
     lines.push("## Working agreement".to_string());
     lines.push("- Prefer small, reviewable Rust changes and keep slash-command behavior aligned between the shared command registry and the CLI entrypoints.".to_string());
-    lines.push("- Do not overwrite existing CLAUDE.md content automatically; update it intentionally when repo workflows change.".to_string());
+    lines.push("- Do not overwrite existing TONGJI.md or legacy CLAUDE.md content automatically; update it intentionally when repo workflows change.".to_string());
     lines.push(String::new());
 
     lines.join(
@@ -1687,7 +1803,9 @@ fn normalize_permission_mode(mode: &str) -> Option<&'static str> {
 }
 
 fn permission_mode_label() -> &'static str {
-    match env::var("RUSTY_CLAUDE_PERMISSION_MODE") {
+    match env::var("TONGJI_CODE_PERMISSION_MODE")
+        .or_else(|_| env::var("RUSTY_CLAUDE_PERMISSION_MODE"))
+    {
         Ok(value) if value == "read-only" => "read-only",
         Ok(value) if value == "danger-full-access" => "danger-full-access",
         _ => "workspace-write",
@@ -1823,7 +1941,7 @@ fn build_runtime(
     system_prompt: Vec<String>,
     enable_tools: bool,
     allowed_tools: Option<AllowedToolSet>,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
+) -> Result<ConversationRuntime<ProviderRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
     build_runtime_with_permission_mode(
         session,
@@ -1842,15 +1960,67 @@ fn build_runtime_with_permission_mode(
     enable_tools: bool,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: &str,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
+) -> Result<ConversationRuntime<ProviderRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
     Ok(ConversationRuntime::new(
         session,
-        AnthropicRuntimeClient::new(model, enable_tools, allowed_tools.clone())?,
+        ProviderRuntimeClient::new(model, enable_tools, allowed_tools.clone())?,
         CliToolExecutor::new(allowed_tools),
         permission_policy(permission_mode),
         system_prompt,
     ))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeProvider {
+    Anthropic,
+    OpenAi,
+}
+
+impl RuntimeProvider {
+    fn detect(model: &str) -> Self {
+        if let Ok(explicit) = env::var("TONGJI_CODE_PROVIDER") {
+            match explicit.trim().to_ascii_lowercase().as_str() {
+                "anthropic" | "claude" => return Self::Anthropic,
+                "openai" | "gpt" => return Self::OpenAi,
+                _ => {}
+            }
+        }
+
+        let model = model.trim().to_ascii_lowercase();
+        if model.starts_with("gpt-")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+            || model.starts_with("chatgpt")
+        {
+            Self::OpenAi
+        } else {
+            Self::Anthropic
+        }
+    }
+}
+
+enum ProviderRuntimeClient {
+    Anthropic(AnthropicRuntimeClient),
+    OpenAi(OpenAiRuntimeClient),
+}
+
+impl ProviderRuntimeClient {
+    fn new(
+        model: String,
+        enable_tools: bool,
+        allowed_tools: Option<AllowedToolSet>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        match RuntimeProvider::detect(&model) {
+            RuntimeProvider::Anthropic => Ok(Self::Anthropic(AnthropicRuntimeClient::new(
+                model,
+                enable_tools,
+                allowed_tools,
+            )?)),
+            RuntimeProvider::OpenAi => Ok(Self::OpenAi(OpenAiRuntimeClient::new(model)?)),
+        }
+    }
 }
 
 struct AnthropicRuntimeClient {
@@ -1877,13 +2047,115 @@ impl AnthropicRuntimeClient {
     }
 }
 
+struct OpenAiRuntimeClient {
+    runtime: tokio::runtime::Runtime,
+    client: OpenAiClient,
+    model: String,
+}
+
+impl OpenAiRuntimeClient {
+    fn new(model: String) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            runtime: tokio::runtime::Runtime::new()?,
+            client: resolve_openai_runtime_client()?,
+            model,
+        })
+    }
+}
+
+fn resolve_openai_runtime_client() -> Result<OpenAiClient, Box<dyn std::error::Error>> {
+    match OpenAiClient::from_env() {
+        Ok(client) => Ok(client),
+        Err(ApiError::MissingApiKey) => resolve_openai_oauth_client(),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn resolve_openai_oauth_client() -> Result<OpenAiClient, Box<dyn std::error::Error>> {
+    let cwd = env::current_dir()?;
+    let config = ConfigLoader::default_for(&cwd).load()?;
+    let selected_provider_id = load_oauth_provider_id().ok().flatten();
+    let oauth = resolve_openai_oauth_provider(&config, selected_provider_id.as_deref())?;
+    let token_set = resolve_saved_oauth_token(oauth)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no OAuth credentials stored"))?;
+    let base_url = oauth
+        .api_base_url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            env::var("OPENAI_BASE_URL")
+                .ok()
+                .filter(|url| !url.trim().is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
+    Ok(OpenAiClient::new(token_set.access_token).with_base_url(base_url))
+}
+
+fn resolve_openai_oauth_provider<'a>(
+    config: &'a RuntimeConfig,
+    selected_provider_id: Option<&str>,
+) -> Result<&'a OAuthConfig, Box<dyn std::error::Error>> {
+    if let Some(provider_id) = selected_provider_id {
+        let oauth = config.oauth_provider(provider_id).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("saved OAuth provider '{provider_id}' is not configured"),
+            )
+        })?;
+        if oauth_supports_openai_runtime(oauth) {
+            return Ok(oauth);
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "saved OAuth provider '{provider_id}' is not OpenAI-compatible; add apiBaseUrl or use OPENAI_API_KEY"
+            ),
+        )
+        .into());
+    }
+
+    let compatible = config
+        .oauth_profiles()
+        .into_iter()
+        .filter(|profile| oauth_supports_openai_runtime(profile))
+        .collect::<Vec<_>>();
+    if compatible.len() == 1 {
+        return Ok(compatible[0]);
+    }
+    if let Some(oauth) = config
+        .oauth()
+        .filter(|profile| oauth_supports_openai_runtime(profile))
+    {
+        return Ok(oauth);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "OpenAI-compatible OAuth config is missing. Configure auth.oauthProviders.<provider>.apiBaseUrl or set OPENAI_API_KEY.",
+    )
+    .into())
+}
+
+fn oauth_supports_openai_runtime(profile: &OAuthConfig) -> bool {
+    profile
+        .api_base_url
+        .as_deref()
+        .is_some_and(|url| !url.trim().is_empty())
+}
+
 fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
     match AuthSource::from_env() {
         Ok(auth) => Ok(auth),
         Err(api::ApiError::MissingApiKey) => {
             let cwd = env::current_dir()?;
             let config = ConfigLoader::default_for(&cwd).load()?;
-            if let Some(oauth) = config.oauth() {
+            let selected_oauth = load_oauth_provider_id()
+                .ok()
+                .flatten()
+                .and_then(|provider_id| config.oauth_provider(&provider_id))
+                .or_else(|| config.oauth());
+            if let Some(oauth) = selected_oauth {
                 if let Some(token_set) = resolve_saved_oauth_token(oauth)? {
                     return Ok(AuthSource::from(token_set));
                 }
@@ -1891,6 +2163,15 @@ fn resolve_cli_auth_source() -> Result<AuthSource, Box<dyn std::error::Error>> {
             Ok(AuthSource::from_env_or_saved()?)
         }
         Err(error) => Err(Box::new(error)),
+    }
+}
+
+impl ApiClient for ProviderRuntimeClient {
+    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        match self {
+            Self::Anthropic(client) => client.stream(request),
+            Self::OpenAi(client) => client.stream(request),
+        }
     }
 }
 
@@ -2008,6 +2289,72 @@ impl ApiClient for AnthropicRuntimeClient {
             response_to_events(response, &mut stdout)
         })
     }
+}
+
+impl ApiClient for OpenAiRuntimeClient {
+    fn stream(&mut self, request: ApiRequest) -> Result<Vec<AssistantEvent>, RuntimeError> {
+        let instructions =
+            (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n"));
+        let input = render_openai_input(&request.messages);
+        let response = self
+            .runtime
+            .block_on(
+                self.client
+                    .create_response(&self.model, &input, instructions.as_deref()),
+            )
+            .map_err(|error| RuntimeError::new(error.to_string()))?;
+
+        let mut stdout = io::stdout();
+        if !response.text.is_empty() {
+            write!(stdout, "{}", response.text)
+                .and_then(|()| stdout.flush())
+                .map_err(|error| RuntimeError::new(error.to_string()))?;
+        }
+
+        let mut events = Vec::new();
+        if !response.text.is_empty() {
+            events.push(AssistantEvent::TextDelta(response.text));
+        }
+        events.push(AssistantEvent::Usage(TokenUsage {
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+        }));
+        events.push(AssistantEvent::MessageStop);
+        Ok(events)
+    }
+}
+
+fn render_openai_input(messages: &[ConversationMessage]) -> String {
+    let mut lines = Vec::new();
+    for message in messages {
+        let role = match message.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "tool",
+        };
+        lines.push(format!("{role}:"));
+        for block in &message.blocks {
+            match block {
+                ContentBlock::Text { text } => lines.push(text.clone()),
+                ContentBlock::ToolUse { id, name, input } => {
+                    lines.push(format!("[tool_use id={id} name={name}] {input}"));
+                }
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    tool_name,
+                    output,
+                    is_error,
+                } => lines.push(format!(
+                    "[tool_result id={tool_use_id} name={tool_name} error={is_error}] {output}"
+                )),
+            }
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
 }
 
 fn push_output_block(
@@ -2149,22 +2496,22 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 }
 
 fn print_help() {
-    println!("rusty-claude-cli v{VERSION}");
+    println!("tongji-code-cli v{VERSION}");
     println!();
     println!("Usage:");
-    println!("  rusty-claude-cli [--model MODEL] [--allowedTools TOOL[,TOOL...]]");
+    println!("  tongji-code-cli [--model MODEL] [--allowedTools TOOL[,TOOL...]]");
     println!("      Start the interactive REPL");
-    println!("  rusty-claude-cli [--model MODEL] [--output-format text|json] prompt TEXT");
+    println!("  tongji-code-cli [--model MODEL] [--output-format text|json] prompt TEXT");
     println!("      Send one prompt and exit");
-    println!("  rusty-claude-cli [--model MODEL] [--output-format text|json] TEXT");
+    println!("  tongji-code-cli [--model MODEL] [--output-format text|json] TEXT");
     println!("      Shorthand non-interactive prompt mode");
-    println!("  rusty-claude-cli --resume SESSION.json [/status] [/compact] [...]");
+    println!("  tongji-code-cli --resume SESSION.json [/status] [/compact] [...]");
     println!("      Inspect or maintain a saved session without entering the REPL");
-    println!("  rusty-claude-cli dump-manifests");
-    println!("  rusty-claude-cli bootstrap-plan");
-    println!("  rusty-claude-cli system-prompt [--cwd PATH] [--date YYYY-MM-DD]");
-    println!("  rusty-claude-cli login");
-    println!("  rusty-claude-cli logout");
+    println!("  tongji-code-cli dump-manifests");
+    println!("  tongji-code-cli bootstrap-plan");
+    println!("  tongji-code-cli system-prompt [--cwd PATH] [--date YYYY-MM-DD]");
+    println!("  tongji-code-cli login [provider]");
+    println!("  tongji-code-cli logout");
     println!();
     println!("Flags:");
     println!("  --model MODEL              Override the active model");
@@ -2185,11 +2532,12 @@ fn print_help() {
         .join(", ");
     println!("Resume-safe commands: {resume_commands}");
     println!("Examples:");
-    println!("  rusty-claude-cli --model claude-opus \"summarize this repo\"");
-    println!("  rusty-claude-cli --output-format json prompt \"explain src/main.rs\"");
-    println!("  rusty-claude-cli --allowedTools read,glob \"summarize Cargo.toml\"");
-    println!("  rusty-claude-cli --resume session.json /status /diff /export notes.txt");
-    println!("  rusty-claude-cli login");
+    println!("  tongji-code-cli --model claude-opus \"summarize this repo\"");
+    println!("  tongji-code-cli --output-format json prompt \"explain src/main.rs\"");
+    println!("  tongji-code-cli --allowedTools read,glob \"summarize Cargo.toml\"");
+    println!("  tongji-code-cli --resume session.json /status /diff /export notes.txt");
+    println!("  tongji-code-cli --model gpt-4.1 \"summarize this repo\"");
+    println!("  tongji-code-cli login anthropic");
 }
 
 #[cfg(test)]
@@ -2198,13 +2546,22 @@ mod tests {
         filter_tool_specs, format_compact_report, format_cost_report, format_init_report,
         format_model_report, format_model_switch_report, format_permissions_report,
         format_permissions_switch_report, format_resume_report, format_status_report,
-        normalize_permission_mode, parse_args, parse_git_status_metadata, render_config_report,
-        render_init_claude_md, render_memory_report, render_repl_help,
-        resume_supported_slash_commands, status_context, CliAction, CliOutputFormat, SlashCommand,
-        StatusUsage, DEFAULT_MODEL,
+        normalize_permission_mode, oauth_supports_openai_runtime, parse_args,
+        parse_git_status_metadata, render_config_report, render_init_claude_md,
+        render_memory_report, render_repl_help, resume_supported_slash_commands, status_context,
+        CliAction, CliOutputFormat, RuntimeProvider, SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
-    use runtime::{ContentBlock, ConversationMessage, MessageRole};
+    use runtime::{ContentBlock, ConversationMessage, MessageRole, OAuthConfig};
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock")
+    }
 
     #[test]
     fn defaults_to_repl_when_no_args() {
@@ -2317,12 +2674,62 @@ mod tests {
     fn parses_login_and_logout_subcommands() {
         assert_eq!(
             parse_args(&["login".to_string()]).expect("login should parse"),
-            CliAction::Login
+            CliAction::Login { provider: None }
         );
         assert_eq!(
             parse_args(&["logout".to_string()]).expect("logout should parse"),
             CliAction::Logout
         );
+    }
+
+    #[test]
+    fn runtime_provider_detects_model_family() {
+        assert_eq!(
+            RuntimeProvider::detect("claude-sonnet-4"),
+            RuntimeProvider::Anthropic
+        );
+        assert_eq!(RuntimeProvider::detect("gpt-4.1"), RuntimeProvider::OpenAi);
+        assert_eq!(RuntimeProvider::detect("o4-mini"), RuntimeProvider::OpenAi);
+    }
+
+    #[test]
+    fn runtime_provider_honors_env_override() {
+        let _lock = env_lock();
+        std::env::set_var("TONGJI_CODE_PROVIDER", "gpt");
+        assert_eq!(
+            RuntimeProvider::detect("claude-sonnet-4"),
+            RuntimeProvider::OpenAi
+        );
+        std::env::set_var("TONGJI_CODE_PROVIDER", "claude");
+        assert_eq!(
+            RuntimeProvider::detect("gpt-4.1"),
+            RuntimeProvider::Anthropic
+        );
+        std::env::remove_var("TONGJI_CODE_PROVIDER");
+    }
+
+    #[test]
+    fn openai_oauth_requires_api_base_url() {
+        let compatible = OAuthConfig {
+            provider_id: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            client_id: "client".to_string(),
+            authorize_url: "https://example.test/oauth/authorize".to_string(),
+            token_url: "https://example.test/oauth/token".to_string(),
+            callback_port: Some(4545),
+            manual_redirect_url: None,
+            scopes: vec!["responses:write".to_string()],
+            api_base_url: Some("https://api.openai.com/v1".to_string()),
+            authorize_params: BTreeMap::new(),
+            token_params: BTreeMap::new(),
+        };
+        let incompatible = OAuthConfig {
+            api_base_url: None,
+            ..compatible.clone()
+        };
+
+        assert!(oauth_supports_openai_runtime(&compatible));
+        assert!(!oauth_supports_openai_runtime(&incompatible));
     }
 
     #[test]
@@ -2478,10 +2885,10 @@ mod tests {
 
     #[test]
     fn init_report_uses_structured_output() {
-        let created = format_init_report(Path::new("/tmp/CLAUDE.md"), true);
+        let created = format_init_report(Path::new("/tmp/TONGJI.md"), true);
         assert!(created.contains("Init"));
         assert!(created.contains("Result           created"));
-        let skipped = format_init_report(Path::new("/tmp/CLAUDE.md"), false);
+        let skipped = format_init_report(Path::new("/tmp/TONGJI.md"), false);
         assert!(skipped.contains("skipped (already exists)"));
     }
 
@@ -2529,7 +2936,7 @@ mod tests {
                 cwd: PathBuf::from("/tmp/project"),
                 session_path: Some(PathBuf::from("session.json")),
                 loaded_config_files: 2,
-                discovered_config_files: 3,
+                discovered_config_files: 6,
                 memory_file_count: 4,
                 project_root: Some(PathBuf::from("/tmp")),
                 git_branch: Some("main".to_string()),
@@ -2545,7 +2952,7 @@ mod tests {
         assert!(status.contains("Project root     /tmp"));
         assert!(status.contains("Git branch       main"));
         assert!(status.contains("Session          session.json"));
-        assert!(status.contains("Config files     loaded 2/3"));
+        assert!(status.contains("Config files     loaded 2/6"));
         assert!(status.contains("Memory files     4"));
     }
 
@@ -2586,7 +2993,7 @@ mod tests {
     fn status_context_reads_real_workspace_metadata() {
         let context = status_context(None).expect("status context should load");
         assert!(context.cwd.is_absolute());
-        assert_eq!(context.discovered_config_files, 3);
+        assert_eq!(context.discovered_config_files, 6);
         assert!(context.loaded_config_files <= context.discovered_config_files);
     }
 
@@ -2645,7 +3052,7 @@ mod tests {
     #[test]
     fn init_template_mentions_detected_rust_workspace() {
         let rendered = render_init_claude_md(Path::new("."));
-        assert!(rendered.contains("# CLAUDE.md"));
+        assert!(rendered.contains("# TONGJI.md"));
         assert!(rendered.contains("cargo clippy --workspace --all-targets -- -D warnings"));
     }
 

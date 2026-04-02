@@ -300,7 +300,7 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "Config",
-            description: "Get or set Claude Code settings.",
+            description: "Get or set Tongji Code settings.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -884,7 +884,7 @@ fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("clawd-rust-tools/0.1")
+        .user_agent("tongji-code-tools/0.1")
         .build()
         .map_err(|error| error.to_string())
 }
@@ -1262,7 +1262,7 @@ fn todo_store_path() -> Result<std::path::PathBuf, String> {
         return Ok(std::path::PathBuf::from(path));
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
-    Ok(cwd.join(".clawd-todos.json"))
+    Ok(cwd.join(".tongji-todos.json"))
 }
 
 fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
@@ -1274,6 +1274,9 @@ fn resolve_skill_path(skill: &str) -> Result<std::path::PathBuf, String> {
     let mut candidates = Vec::new();
     if let Ok(codex_home) = std::env::var("CODEX_HOME") {
         candidates.push(std::path::PathBuf::from(codex_home).join("skills"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(std::path::PathBuf::from(home).join(".codex").join("skills"));
     }
     candidates.push(std::path::PathBuf::from("/home/bellman/.codex/skills"));
 
@@ -1504,9 +1507,9 @@ fn agent_store_dir() -> Result<std::path::PathBuf, String> {
     }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     if let Some(workspace_root) = cwd.ancestors().nth(2) {
-        return Ok(workspace_root.join(".clawd-agents"));
+        return Ok(workspace_root.join(".tongji-agents"));
     }
-    Ok(cwd.join(".clawd-agents"))
+    Ok(cwd.join(".tongji-agents"))
 }
 
 fn make_agent_id() -> String {
@@ -2047,16 +2050,19 @@ fn config_file_for_scope(scope: ConfigScope) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     Ok(match scope {
         ConfigScope::Global => config_home_dir()?.join("settings.json"),
-        ConfigScope::Settings => cwd.join(".claude").join("settings.local.json"),
+        ConfigScope::Settings => cwd.join(".tongji").join("settings.local.json"),
     })
 }
 
 fn config_home_dir() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("TONGJI_CODE_CONFIG_HOME") {
+        return Ok(PathBuf::from(path));
+    }
     if let Ok(path) = std::env::var("CLAUDE_CONFIG_HOME") {
         return Ok(PathBuf::from(path));
     }
     let home = std::env::var("HOME").map_err(|_| String::from("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".claude"))
+    Ok(PathBuf::from(home).join(".tongji-code"))
 }
 
 fn read_json_object(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
@@ -2370,7 +2376,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        std::env::temp_dir().join(format!("clawd-tools-{unique}-{name}"))
+        std::env::temp_dir().join(format!("tongji-code-tools-{unique}-{name}"))
     }
 
     #[test]
@@ -2673,6 +2679,20 @@ mod tests {
 
     #[test]
     fn skill_loads_local_skill_prompt() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let codex_home = temp_path("skills-home");
+        let skill_dir = codex_home.join("skills").join("help");
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "Guide on using oh-my-codex plugin\n\n## Overview\nUse the helper skill.\n",
+        )
+        .expect("write skill");
+        let original_codex_home = std::env::var("CODEX_HOME").ok();
+        std::env::set_var("CODEX_HOME", &codex_home);
+
         let result = execute_tool(
             "Skill",
             &json!({
@@ -2707,6 +2727,12 @@ mod tests {
             .as_str()
             .expect("path")
             .ends_with("/help/SKILL.md"));
+
+        match original_codex_home {
+            Some(value) => std::env::set_var("CODEX_HOME", value),
+            None => std::env::remove_var("CODEX_HOME"),
+        }
+        let _ = fs::remove_dir_all(codex_home);
     }
 
     #[test]
@@ -3188,7 +3214,7 @@ mod tests {
     #[test]
     fn brief_returns_sent_message_and_attachment_metadata() {
         let attachment = std::env::temp_dir().join(format!(
-            "clawd-brief-{}.png",
+            "tongji-code-brief-{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -3219,7 +3245,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = std::env::temp_dir().join(format!(
-            "clawd-config-{}",
+            "tongji-code-config-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -3227,18 +3253,20 @@ mod tests {
         ));
         let home = root.join("home");
         let cwd = root.join("cwd");
-        std::fs::create_dir_all(home.join(".claude")).expect("home dir");
-        std::fs::create_dir_all(cwd.join(".claude")).expect("cwd dir");
+        std::fs::create_dir_all(home.join(".tongji-code")).expect("home dir");
+        std::fs::create_dir_all(cwd.join(".tongji")).expect("cwd dir");
         std::fs::write(
-            home.join(".claude").join("settings.json"),
+            home.join(".tongji-code").join("settings.json"),
             r#"{"verbose":false}"#,
         )
         .expect("write global settings");
 
         let original_home = std::env::var("HOME").ok();
+        let original_tongji_home = std::env::var("TONGJI_CODE_CONFIG_HOME").ok();
         let original_claude_home = std::env::var("CLAUDE_CONFIG_HOME").ok();
         let original_dir = std::env::current_dir().expect("cwd");
         std::env::set_var("HOME", &home);
+        std::env::remove_var("TONGJI_CODE_CONFIG_HOME");
         std::env::remove_var("CLAUDE_CONFIG_HOME");
         std::env::set_current_dir(&cwd).expect("set cwd");
 
@@ -3271,6 +3299,10 @@ mod tests {
         match original_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        match original_tongji_home {
+            Some(value) => std::env::set_var("TONGJI_CODE_CONFIG_HOME", value),
+            None => std::env::remove_var("TONGJI_CODE_CONFIG_HOME"),
         }
         match original_claude_home {
             Some(value) => std::env::set_var("CLAUDE_CONFIG_HOME", value),
@@ -3308,7 +3340,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!(
-            "clawd-pwsh-bin-{}",
+            "tongji-code-pwsh-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")
@@ -3365,7 +3397,7 @@ printf 'pwsh:%s' "$1"
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let original_path = std::env::var("PATH").unwrap_or_default();
         let empty_dir = std::env::temp_dir().join(format!(
-            "clawd-empty-bin-{}",
+            "tongji-code-empty-bin-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("time")

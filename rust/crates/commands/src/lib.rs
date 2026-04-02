@@ -89,19 +89,19 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "config",
-        summary: "Inspect Claude config files or merged sections",
+        summary: "Inspect Tongji Code and Claude-compatible config files or merged sections",
         argument_hint: Some("[env|hooks|model]"),
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "memory",
-        summary: "Inspect loaded Claude instruction memory files",
+        summary: "Inspect loaded Tongji Code instruction memory files",
         argument_hint: None,
         resume_supported: true,
     },
     SlashCommandSpec {
         name: "init",
-        summary: "Create a starter CLAUDE.md for this repo",
+        summary: "Create a starter TONGJI.md for this repo",
         argument_hint: None,
         resume_supported: true,
     },

@@ -2,3 +2,7 @@ __pycache__/
 archive/
 .omx/
 .clawd-agents/
+.port_sessions/
+.tongji-agents/
+.tongji/sessions/
+.tongji-todos.json

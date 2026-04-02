@@ -2,16 +2,18 @@ use std::collections::VecDeque;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use runtime::{
-    load_oauth_credentials, save_oauth_credentials, OAuthConfig, OAuthRefreshRequest,
+    load_oauth_credentials, save_oauth_credentials_for_provider, OAuthConfig, OAuthRefreshRequest,
     OAuthTokenExchangeRequest,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::sse::SseParser;
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
@@ -108,6 +110,22 @@ pub struct AnthropicClient {
     max_retries: u32,
     initial_backoff: Duration,
     max_backoff: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenAiClient {
+    http: reqwest::Client,
+    api_key: String,
+    base_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAiTextResponse {
+    pub id: String,
+    pub model: Option<String>,
+    pub text: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
 }
 
 impl AnthropicClient {
@@ -349,6 +367,80 @@ impl AnthropicClient {
     }
 }
 
+impl OpenAiClient {
+    #[must_use]
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            api_key: api_key.into(),
+            base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
+        }
+    }
+
+    pub fn from_env() -> Result<Self, ApiError> {
+        Ok(Self::new(read_openai_api_key()?).with_base_url(read_openai_base_url()))
+    }
+
+    #[must_use]
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
+    pub async fn create_response(
+        &self,
+        model: &str,
+        input: &str,
+        instructions: Option<&str>,
+    ) -> Result<OpenAiTextResponse, ApiError> {
+        let mut body = serde_json::Map::new();
+        body.insert("model".to_string(), json!(model));
+        body.insert("input".to_string(), json!(input));
+        body.insert("stream".to_string(), json!(false));
+        if let Some(instructions) = instructions.filter(|value| !value.is_empty()) {
+            body.insert("instructions".to_string(), json!(instructions));
+        }
+
+        let response = self
+            .http
+            .post(format!("{}/responses", self.base_url.trim_end_matches('/')))
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json")
+            .json(&Value::Object(body))
+            .send()
+            .await
+            .map_err(ApiError::from)?;
+        let value = expect_success(response)
+            .await?
+            .json::<Value>()
+            .await
+            .map_err(ApiError::from)?;
+
+        Ok(OpenAiTextResponse {
+            id: value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("openai-response")
+                .to_string(),
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            text: extract_openai_output_text(&value),
+            input_tokens: value
+                .get("usage")
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            output_tokens: value
+                .get("usage")
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        })
+    }
+}
+
 impl AuthSource {
     pub fn from_env_or_saved() -> Result<Self, ApiError> {
         if let Some(api_key) = read_env_non_empty("ANTHROPIC_API_KEY")? {
@@ -407,12 +499,15 @@ pub fn resolve_saved_oauth_token(config: &OAuthConfig) -> Result<Option<OAuthTok
             )
             .await
     })?;
-    save_oauth_credentials(&runtime::OAuthTokenSet {
-        access_token: refreshed.access_token.clone(),
-        refresh_token: refreshed.refresh_token.clone(),
-        expires_at: refreshed.expires_at,
-        scopes: refreshed.scopes.clone(),
-    })
+    save_oauth_credentials_for_provider(
+        Some(&config.provider_id),
+        &runtime::OAuthTokenSet {
+            access_token: refreshed.access_token.clone(),
+            refresh_token: refreshed.refresh_token.clone(),
+            expires_at: refreshed.expires_at,
+            scopes: refreshed.scopes.clone(),
+        },
+    )
     .map_err(ApiError::from)?;
     Ok(Some(refreshed))
 }
@@ -466,8 +561,50 @@ fn read_auth_token() -> Option<String> {
         .and_then(std::convert::identity)
 }
 
+fn read_openai_api_key() -> Result<String, ApiError> {
+    read_env_non_empty("OPENAI_API_KEY")?.ok_or(ApiError::MissingApiKey)
+}
+
 fn read_base_url() -> String {
     std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+}
+
+fn read_openai_base_url() -> String {
+    std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string())
+}
+
+fn extract_openai_output_text(value: &Value) -> String {
+    if let Some(text) = value.get("output_text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+
+    let mut chunks = Vec::new();
+    if let Some(items) = value.get("output").and_then(Value::as_array) {
+        for item in items {
+            if item.get("type").and_then(Value::as_str) != Some("message") {
+                continue;
+            }
+            if let Some(contents) = item.get("content").and_then(Value::as_array) {
+                for content in contents {
+                    match content.get("type").and_then(Value::as_str) {
+                        Some("output_text") => {
+                            if let Some(text) = content.get("text").and_then(Value::as_str) {
+                                chunks.push(text.to_string());
+                            }
+                        }
+                        Some("refusal") => {
+                            if let Some(text) = content.get("refusal").and_then(Value::as_str) {
+                                chunks.push(text.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    chunks.join("")
 }
 
 fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
@@ -562,6 +699,7 @@ struct AnthropicErrorBody {
 #[cfg(test)]
 mod tests {
     use super::{ALT_REQUEST_ID_HEADER, REQUEST_ID_HEADER};
+    use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
@@ -596,12 +734,17 @@ mod tests {
 
     fn sample_oauth_config(token_url: String) -> OAuthConfig {
         OAuthConfig {
+            provider_id: "anthropic".to_string(),
+            display_name: "Claude".to_string(),
             client_id: "runtime-client".to_string(),
             authorize_url: "https://console.test/oauth/authorize".to_string(),
             token_url,
             callback_port: Some(4545),
             manual_redirect_url: Some("https://console.test/oauth/callback".to_string()),
             scopes: vec!["org:read".to_string(), "user:write".to_string()],
+            api_base_url: None,
+            authorize_params: BTreeMap::new(),
+            token_params: BTreeMap::new(),
         }
     }
 

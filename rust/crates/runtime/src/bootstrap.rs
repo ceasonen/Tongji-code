@@ -21,7 +21,7 @@ pub struct BootstrapPlan {
 
 impl BootstrapPlan {
     #[must_use]
-    pub fn claude_code_default() -> Self {
+    pub fn tongji_code_default() -> Self {
         Self::from_phases(vec![
             BootstrapPhase::CliEntry,
             BootstrapPhase::FastPathVersion,
@@ -36,6 +36,11 @@ impl BootstrapPlan {
             BootstrapPhase::EnvironmentRunnerFastPath,
             BootstrapPhase::MainRuntime,
         ])
+    }
+
+    #[must_use]
+    pub fn claude_code_default() -> Self {
+        Self::tongji_code_default()
     }
 
     #[must_use]

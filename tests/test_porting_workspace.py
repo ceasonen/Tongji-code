@@ -20,7 +20,7 @@ class PortingWorkspaceTests(unittest.TestCase):
 
     def test_query_engine_summary_mentions_workspace(self) -> None:
         summary = QueryEnginePort.from_workspace().render_summary()
-        self.assertIn('Python Porting Workspace Summary', summary)
+        self.assertIn('Tongji Code Workspace Summary', summary)
         self.assertIn('Command surface:', summary)
         self.assertIn('Tool surface:', summary)
 
@@ -31,7 +31,7 @@ class PortingWorkspaceTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn('Python Porting Workspace Summary', result.stdout)
+        self.assertIn('Tongji Code Workspace Summary', result.stdout)
 
     def test_parity_audit_runs(self) -> None:
         result = subprocess.run(
