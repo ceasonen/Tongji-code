@@ -70,12 +70,20 @@ cargo build -p tongji-code-cli
 cargo run -p tongji-code-cli -- --help
 ```
 
-### Global install via npm
+### Download from GitHub Releases
 
 ```bash
-npm install -g tongji-code
-tongji-code --help
+curl -L https://github.com/ceasonen/Tongji-code/releases/latest/download/tongji-code-darwin-arm64 -o tongji-code
+chmod +x tongji-code
+./tongji-code --help
 ```
+
+Swap the asset name to match your platform:
+
+- `tongji-code-darwin-arm64`
+- `tongji-code-darwin-x64`
+- `tongji-code-linux-x64-gnu`
+- `tongji-code-win32-x64-msvc.exe`
 
 ### One-shot prompt examples
 
@@ -244,12 +252,11 @@ cargo test -p api
 
 ## Distribution
 
-Tongji Code is now set up for npm-style CLI distribution:
+Tongji Code now ships as a GitHub-first CLI:
 
-- npm package source lives in `npm/`
-- the package installs a lightweight Node launcher
-- the launcher downloads the matching prebuilt `tongji-code-cli` binary from GitHub Releases
-- `.github/workflows/release.yml` builds release binaries and publishes the npm package on `v*` tags
+- download a prebuilt binary from GitHub Releases
+- or build `tongji-code-cli` locally from `rust/`
+- `.github/workflows/release.yml` builds and uploads release binaries for `v*` tags
 
 ## Disclaimer
 

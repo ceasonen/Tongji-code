@@ -62,12 +62,20 @@ cargo run -p tongji-code-cli -- --help
 cargo run -p tongji-code-cli -- --version
 ```
 
-### npm install
+### GitHub Releases binary
 
 ```bash
-npm install -g tongji-code
-tongji-code --help
+curl -L https://github.com/ceasonen/Tongji-code/releases/latest/download/tongji-code-darwin-arm64 -o tongji-code
+chmod +x tongji-code
+./tongji-code --help
 ```
+
+Available assets:
+
+- `tongji-code-darwin-arm64`
+- `tongji-code-darwin-x64`
+- `tongji-code-linux-x64-gnu`
+- `tongji-code-win32-x64-msvc.exe`
 
 ### Interactive shell
 
@@ -262,4 +270,4 @@ The `/init` command creates `TONGJI.md` and avoids clobbering either Tongji or l
 
 - `compat-harness` exists for extraction/comparison work and is intentionally excluded from the normal release test command.
 - The OpenAI-compatible runtime currently provides basic text response execution. Anthropic remains the richer path for tool-use streaming in this workspace.
-- The npm distribution wrapper lives in `../npm` and is designed to fetch prebuilt release assets from GitHub Releases.
+- The primary distribution path is GitHub Releases plus local source builds from `rust/`.

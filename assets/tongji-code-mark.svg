@@ -1,19 +1,26 @@
 <svg width="1200" height="260" viewBox="0 0 1200 260" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">Tongji Code</title>
-  <desc id="desc">Minimal pixel-style Tongji Code logo.</desc>
-  <rect width="1200" height="260" fill="#F6F7FB"/>
-  <rect x="42" y="42" width="117" height="117" fill="#C8102E"/>
-  <rect x="159" y="42" width="39" height="39" fill="#C8102E"/>
-  <rect x="159" y="81" width="39" height="39" fill="#0F4C81"/>
-  <rect x="159" y="120" width="39" height="39" fill="#C8102E"/>
-  <rect x="42" y="159" width="39" height="39" fill="#0F4C81"/>
-  <rect x="81" y="159" width="39" height="39" fill="#0F4C81"/>
-  <rect x="120" y="159" width="39" height="39" fill="#0F4C81"/>
-  <rect x="198" y="81" width="39" height="39" fill="#0F4C81"/>
-  <rect x="237" y="42" width="39" height="39" fill="#C8102E"/>
-  <rect x="237" y="81" width="39" height="39" fill="#0F4C81"/>
-  <rect x="237" y="120" width="39" height="39" fill="#C8102E"/>
-  <rect x="276" y="81" width="39" height="39" fill="#0F4C81"/>
-  <text x="365" y="118" fill="#0F172A" font-size="68" font-weight="700" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" letter-spacing="1">tongji-code</text>
-  <text x="367" y="168" fill="#64748B" font-size="24" font-weight="500" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" letter-spacing="2">pixel runtime for coding agents</text>
+  <desc id="desc">Elegant pixel-style Tongji Code logo with a warm neutral palette.</desc>
+  <rect width="1200" height="260" rx="24" fill="#F4EEE6"/>
+  <rect x="54" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="86" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="118" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="150" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="182" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="214" y="54" width="26" height="26" fill="#1F1916"/>
+  <rect x="54" y="86" width="26" height="26" fill="#1F1916"/>
+  <rect x="214" y="86" width="26" height="26" fill="#1F1916"/>
+  <rect x="54" y="118" width="26" height="26" fill="#1F1916"/>
+  <rect x="118" y="118" width="26" height="26" fill="#A6674C"/>
+  <rect x="150" y="118" width="26" height="26" fill="#D5C0A6"/>
+  <rect x="214" y="118" width="26" height="26" fill="#1F1916"/>
+  <rect x="54" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="86" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="118" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="150" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="182" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="214" y="150" width="26" height="26" fill="#1F1916"/>
+  <rect x="278" y="70" width="10" height="90" fill="#DCCFC0"/>
+  <text x="340" y="120" fill="#1F1916" font-size="70" font-weight="700" font-family="Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif" letter-spacing="0.4">Tongji Code</text>
+  <text x="342" y="168" fill="#6E6258" font-size="24" font-weight="500" font-family="'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace" letter-spacing="1.8">quiet pixels for coding agents</text>
 </svg>
