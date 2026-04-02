@@ -78,11 +78,15 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Sync npm package version
+      - name: Verify npm package version
         working-directory: npm
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          npm version "$VERSION" --no-git-tag-version
+          CURRENT="$(node -p "require('./package.json').version")"
+          if [ "$CURRENT" != "$VERSION" ]; then
+            echo "npm/package.json version ($CURRENT) does not match release tag ($VERSION)"
+            exit 1
+          fi
 
       - name: Publish npm package
         working-directory: npm
