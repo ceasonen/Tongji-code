@@ -1,6 +1,6 @@
 {
   "name": "tongji-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tongji Code CLI launcher and binary installer",
   "license": "MIT",
   "type": "module",
